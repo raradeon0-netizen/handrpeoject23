@@ -17,8 +17,11 @@ local Theme = {
 	PrimaryButtonColor = Color3.fromRGB(170, 130, 60),
 	SecondaryButtonColor = Color3.fromRGB(70, 58, 44),
 
-	CornerRadius = UDim.new(0, 10),
-	StrokeThickness = 2,
+	PanelTransparency = 0.06, -- панели чуть просвечивают: мир за ними не пропадает
+	CornerRadius = UDim.new(0, 8),
+	StrokeThickness = 1.5,
+	StrokeTransparency = 0.25, -- тонкая приглушённая золотая кайма
+	HoverTweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 
 	TweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 

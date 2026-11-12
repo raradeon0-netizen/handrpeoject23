@@ -40,6 +40,7 @@ BuildConfig.PaintRemoteName = "PaintBlock"
 BuildConfig.TabletRemoteName = "PlaceTablet"
 BuildConfig.EraseTabletRemoteName = "EraseTablet"
 BuildConfig.ToggleLightRemoteName = "ToggleLight"
+BuildConfig.SaveRemoteName = "PlotSave" -- клиент -> сервер: "Save" / "Load"; сервер -> клиент: статус
 BuildConfig.NoticeRemoteName = "BuildNotice" -- сервер -> клиент: короткие сообщения для панели
 
 -- Папки внутри Part участка. Лежат внутри участка, поэтому удаляются вместе с ним.
@@ -91,6 +92,10 @@ BuildConfig.CarveCooldown = 0.35 -- CSG — дорогая операция
 BuildConfig.MaxBlocksPerPlayer = 2000
 BuildConfig.MaxCarveTargets = 24 -- сколько деталей максимум прорезает один клик (у моделей режется каждая)
 BuildConfig.LightCooldown = 0.2 -- секунд между переключениями светильника
+
+-- Облачное сохранение участка (SaveManager).
+BuildConfig.SaveStoreName = "AncientWorldPlots_v1"
+BuildConfig.SaveCooldown = 6 -- секунд между ручными сохранениями (лимиты DataStore)
 BuildConfig.MoveCooldown = 0.1 -- секунд между переносами
 BuildConfig.PaintCooldown = 0.05 -- секунд между покрасками
 BuildConfig.TabletCooldown = 0.3 -- секунд между скрижалями
@@ -242,6 +247,9 @@ BuildConfig.Attributes = {
 	OwnerUserId = "OwnerUserId",
 	ShapeId = "ShapeId",
 	TabletId = "TabletId", -- стоит на плите скрижали (потомок детали блока)
+	PieceIndex = "PieceIndex", -- номер детали составной модели в списке BlockLibrary
+	Size = "Size", -- свой размер составного блока (если он растянут)
+	PaintId = "PaintId", -- id материала из PaintCatalog, которым деталь перекрашена
 }
 
 return BuildConfig

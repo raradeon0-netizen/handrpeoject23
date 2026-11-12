@@ -17,6 +17,7 @@ local function decorate(instance: GuiObject, strokeColor: Color3?)
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = strokeColor or Theme.PanelStroke
 	stroke.Thickness = Theme.StrokeThickness
+	stroke.Transparency = Theme.StrokeTransparency
 	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	stroke.Parent = instance
 end
@@ -42,6 +43,7 @@ function UIFactory.panel(name: string, size: UDim2, parent: Instance): Frame
 	frame.Position = UDim2.fromScale(0.5, 0.5)
 	frame.Size = size
 	frame.BackgroundColor3 = Theme.PanelColor
+	frame.BackgroundTransparency = Theme.PanelTransparency
 	frame.BorderSizePixel = 0
 	frame.Parent = parent
 	decorate(frame)
@@ -79,11 +81,19 @@ function UIFactory.button(name: string, text: string, color: Color3, parent: Ins
 	decorate(button, strokeColor)
 
 	local hoverColor = color:Lerp(Color3.new(1, 1, 1), 0.15)
+	-- Наведение: кнопка светлеет, а кайма становится ярче.
+	local stroke = button:FindFirstChildOfClass("UIStroke")
+	local function hover(background: Color3, strokeTransparency: number)
+		TweenService:Create(button, Theme.HoverTweenInfo, { BackgroundColor3 = background }):Play()
+		if stroke then
+			TweenService:Create(stroke, Theme.HoverTweenInfo, { Transparency = strokeTransparency }):Play()
+		end
+	end
 	button.MouseEnter:Connect(function()
-		TweenService:Create(button, Theme.TweenInfo, { BackgroundColor3 = hoverColor }):Play()
+		hover(hoverColor, 0)
 	end)
 	button.MouseLeave:Connect(function()
-		TweenService:Create(button, Theme.TweenInfo, { BackgroundColor3 = color }):Play()
+		hover(color, Theme.StrokeTransparency)
 	end)
 
 	return button

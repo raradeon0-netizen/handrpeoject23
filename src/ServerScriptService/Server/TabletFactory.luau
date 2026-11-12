@@ -121,6 +121,35 @@ local function buildInscription(tablet: PaintCatalog.Tablet, look: Look, parent:
 	body.Size = UDim2.fromScale(0.9, 0.63)
 end
 
+-- Создаёт плиту скрижали с надписью и вешает её на деталь. cframe — мировой CFrame плиты
+-- (лицевая грань Front смотрит наружу). Используется и при установке, и при загрузке сохранения.
+function TabletFactory.spawn(
+	part: BasePart,
+	tablet: PaintCatalog.Tablet,
+	cframe: CFrame,
+	width: number,
+	height: number
+): BasePart
+	local look = LOOKS[tablet.style]
+	local plaque = Instance.new("Part")
+	plaque.Name = "Tablet"
+	plaque.Size = Vector3.new(width, height, BuildConfig.TabletSize.Z)
+	plaque.CFrame = cframe
+	plaque.Anchored = true
+	plaque.CanCollide = false
+	plaque.CanQuery = false
+	plaque.CanTouch = false
+	plaque.CastShadow = false
+	plaque.Material = look.material
+	plaque.Color = look.color
+	plaque.TopSurface = Enum.SurfaceType.Smooth
+	plaque.BottomSurface = Enum.SurfaceType.Smooth
+	plaque:SetAttribute(BuildConfig.Attributes.TabletId, tablet.id)
+	buildInscription(tablet, look, plaque)
+	plaque.Parent = part
+	return plaque
+end
+
 -- Вешает скрижаль на грань детали part в точке попадания луча (hitPos, hitNormal — мировые).
 function TabletFactory.place(
 	plot: BasePart,
@@ -177,24 +206,8 @@ function TabletFactory.place(
 		end
 	end
 
-	local look = LOOKS[tablet.style]
-	local plaque = Instance.new("Part")
-	plaque.Name = "Tablet"
-	plaque.Size = Vector3.new(width, height, full.Z)
-	plaque.CFrame = CFrame.lookAt(position, position + normal, up) -- лицевая грань (Front) смотрит наружу
-	plaque.Anchored = true
-	plaque.CanCollide = false
-	plaque.CanQuery = false
-	plaque.CanTouch = false
-	plaque.CastShadow = false
-	plaque.Material = look.material
-	plaque.Color = look.color
-	plaque.TopSurface = Enum.SurfaceType.Smooth
-	plaque.BottomSurface = Enum.SurfaceType.Smooth
-	plaque:SetAttribute(BuildConfig.Attributes.TabletId, tablet.id)
-	buildInscription(tablet, look, plaque)
-	plaque.Parent = part
-	return plaque
+	-- Лицевая грань (Front) смотрит наружу.
+	return TabletFactory.spawn(part, tablet, CFrame.lookAt(position, position + normal, up), width, height)
 end
 
 -- Снимает все скрижали с грани детали, на которую указывает нормаль. Возвращает их число.

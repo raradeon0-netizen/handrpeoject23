@@ -986,8 +986,10 @@ function BlockLibrary.buildModel(shapeId: string, factionId: string?, cframe: CF
 
 	local model = Instance.new("Model")
 	model.Name = shapeId
-	for _, piece in pieces do
+	for index, piece in pieces do
 		local part = BlockLibrary.makePart(piece)
+		-- По номеру детали сохранение находит её после перестройки модели.
+		part:SetAttribute(BuildConfig.Attributes.PieceIndex, index)
 		local look = palette[piece.role]
 		local color = piece.color or look.color
 		local shade = piece.shade
@@ -1496,6 +1498,7 @@ BuildConfig.PaintRemoteName = "PaintBlock"
 BuildConfig.TabletRemoteName = "PlaceTablet"
 BuildConfig.EraseTabletRemoteName = "EraseTablet"
 BuildConfig.ToggleLightRemoteName = "ToggleLight"
+BuildConfig.SaveRemoteName = "PlotSave" -- клиент -> сервер: "Save" / "Load"; сервер -> клиент: статус
 BuildConfig.NoticeRemoteName = "BuildNotice" -- сервер -> клиент: короткие сообщения для панели
 
 -- Папки внутри Part участка. Лежат внутри участка, поэтому удаляются вместе с ним.
@@ -1547,6 +1550,10 @@ BuildConfig.CarveCooldown = 0.35 -- CSG — дорогая операция
 BuildConfig.MaxBlocksPerPlayer = 2000
 BuildConfig.MaxCarveTargets = 24 -- сколько деталей максимум прорезает один клик (у моделей режется каждая)
 BuildConfig.LightCooldown = 0.2 -- секунд между переключениями светильника
+
+-- Облачное сохранение участка (SaveManager).
+BuildConfig.SaveStoreName = "AncientWorldPlots_v1"
+BuildConfig.SaveCooldown = 6 -- секунд между ручными сохранениями (лимиты DataStore)
 BuildConfig.MoveCooldown = 0.1 -- секунд между переносами
 BuildConfig.PaintCooldown = 0.05 -- секунд между покрасками
 BuildConfig.TabletCooldown = 0.3 -- секунд между скрижалями
@@ -1698,6 +1705,9 @@ BuildConfig.Attributes = {
 	OwnerUserId = "OwnerUserId",
 	ShapeId = "ShapeId",
 	TabletId = "TabletId", -- стоит на плите скрижали (потомок детали блока)
+	PieceIndex = "PieceIndex", -- номер детали составной модели в списке BlockLibrary
+	Size = "Size", -- свой размер составного блока (если он растянут)
+	PaintId = "PaintId", -- id материала из PaintCatalog, которым деталь перекрашена
 }
 
 return BuildConfig
@@ -2981,10 +2991,26 @@ export type Claim = {
 local PlotOwnership = {}
 
 local claims: { [number]: Claim } = {} -- UserId -> участок
+local claimCallbacks: { (Claim) -> () } = {}
+local releaseCallbacks: { (Claim) -> () } = {}
+
+-- Подписка на выдачу участка (например, подгрузить сохранённые постройки).
+function PlotOwnership.onClaim(callback: (Claim) -> ())
+	table.insert(claimCallbacks, callback)
+end
+
+-- Подписка на освобождение участка: вызывается до его удаления (автосохранение).
+function PlotOwnership.onRelease(callback: (Claim) -> ())
+	table.insert(releaseCallbacks, callback)
+end
 
 -- Закрепляет участок за игроком.
 function PlotOwnership.claim(player: Player, plot: Part, factionId: string)
-	claims[player.UserId] = { player = player, plot = plot, factionId = factionId }
+	local claim: Claim = { player = player, plot = plot, factionId = factionId }
+	claims[player.UserId] = claim
+	for _, callback in claimCallbacks do
+		task.spawn(callback, claim)
+	end
 end
 
 -- Участок игрока или nil, если он ещё не выбрал фракцию.
@@ -2995,6 +3021,12 @@ end
 -- Снимает закрепление и возвращает снятую запись (nil, если её не было).
 function PlotOwnership.release(player: Player): Claim?
 	local claim = claims[player.UserId]
+	if claim then
+		-- Подписчики выполняются до первой паузы сразу: участок ещё цел, его можно прочитать.
+		for _, callback in releaseCallbacks do
+			task.spawn(callback, claim)
+		end
+	end
 	claims[player.UserId] = nil
 	return claim
 end
@@ -3162,6 +3194,7 @@ local BlockCarver = require(script.Parent.BlockCarver)
 local BlockMover = require(script.Parent.BlockMover)
 local BlockPainter = require(script.Parent.BlockPainter)
 local TabletFactory = require(script.Parent.TabletFactory)
+local SaveManager = require(script.Parent.SaveManager)
 
 -- Шаг 1. RemoteEvent'ы для клиента.
 local function makeRemote(name: string): RemoteEvent
@@ -3563,6 +3596,9 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	lastAction[player] = nil
 	carving[player] = nil
 end)
+
+-- Облачное сохранение участка: кнопки верхней панели, автозагрузка и автосохранение.
+SaveManager.start()
 ]]></string></Properties></Item>
 <Item class="ModuleScript" referent="35"><Properties><string name="Name">BlockFactory</string><string name="Source"><![CDATA[--!strict
 -- BlockFactory: создаёт реальный закреплённый (Anchored) блок нужной формы.
@@ -3621,6 +3657,9 @@ function BlockFactory.create(
 	-- Метки: чей блок и какой формы (проверяются при удалении).
 	block:SetAttribute(BuildConfig.Attributes.OwnerUserId, owner.UserId)
 	block:SetAttribute(BuildConfig.Attributes.ShapeId, shapeId)
+	if shape.prefab and size then
+		block:SetAttribute(BuildConfig.Attributes.Size, size)
+	end
 	return block
 end
 
@@ -3633,11 +3672,17 @@ return BlockFactory
 -- Каждый вызов SubtractAsync обёрнут в pcall: на сложных пересечениях
 -- (слишком много треугольников, вырожденная геометрия, пустой результат)
 -- движок бросает ошибку — тогда блок просто остаётся как был.
+--
+-- Результат CSG нельзя сохранить «как есть», поэтому каждая деталь помнит свою историю:
+-- исходную рамку (где и какого размера она была до первого выреза) и список резаков
+-- относительно этой рамки. По ним PlotSerializer воссоздаёт вырезы при загрузке (replay).
 
+local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
+local SaveCodec = require(script.Parent.SaveCodec)
 
 export type CarveResult = {
 	carved: number, -- сколько блоков прорезано
@@ -3645,17 +3690,47 @@ export type CarveResult = {
 	failed: number, -- на скольких CSG не справился (блок не изменился)
 }
 
+-- Один вырез: резак относительно исходной рамки детали.
+export type Cut = {
+	c: { number }, -- CFrame резака (SaveCodec.encodeCFrame)
+	z: { number }, -- размер резака
+}
+
+type Outcome = "carved" | "removed" | "failed" | "gone"
+
+local BASE_OFFSET = "BaseOffset" -- CFrame: исходная рамка относительно нынешнего CFrame детали
+local BASE_SIZE = "BaseSize" -- Vector3: размер детали до вырезов
+local CUTS = "Cuts" -- JSON-список Cut
+
+local MAX_REPLAYED_CUTS = 64
+
 local BlockCarver = {}
 
--- Невидимая деталь-резак той же формы, что и призрак (чуть больше, см. CutterInflate).
+-- Исходная рамка детали: её CFrame и размер до вырезов. Перенос блока рамку не ломает —
+-- она хранится относительно самой детали.
+function BlockCarver.getBase(part: BasePart): (CFrame, Vector3)
+	local offset = part:GetAttribute(BASE_OFFSET)
+	local size = part:GetAttribute(BASE_SIZE)
+	return part.CFrame * (if typeof(offset) == "CFrame" then offset else CFrame.identity),
+		if typeof(size) == "Vector3" then size else part.Size
+end
+
+-- Вырезы, уже сделанные в детали (в порядке применения).
+function BlockCarver.getCuts(part: BasePart): { Cut }
+	local raw = part:GetAttribute(CUTS)
+	if typeof(raw) ~= "string" then
+		return {}
+	end
+	local ok, decoded = pcall(function()
+		return HttpService:JSONDecode(raw)
+	end)
+	return if ok and typeof(decoded) == "table" then decoded else {}
+end
+
 local function makeCutter(cframe: CFrame, size: Vector3): Part
 	local cutter = Instance.new("Part")
 	cutter.Name = "BuildCutter"
-	-- Тонкую сторону полосы не раздуваем: пропил остаётся ровно в её толщину.
-	local function inflate(side: number): number
-		return if side > BuildConfig.BladeThickness + 1e-3 then side + BuildConfig.CutterInflate * 2 else side
-	end
-	cutter.Size = Vector3.new(inflate(size.X), inflate(size.Y), inflate(size.Z))
+	cutter.Size = size
 	cutter.CFrame = cframe
 	cutter.Anchored = true
 	cutter.CanCollide = false
@@ -3664,6 +3739,15 @@ local function makeCutter(cframe: CFrame, size: Vector3): Part
 	cutter.CastShadow = false
 	cutter.Transparency = 1
 	return cutter
+end
+
+-- Резак чуть больше призрака: без «плёнок» на совпадающих гранях.
+-- Тонкую сторону полосы не раздуваем: пропил остаётся ровно в её толщину.
+local function inflated(size: Vector3): Vector3
+	local function inflate(side: number): number
+		return if side > BuildConfig.BladeThickness + 1e-3 then side + BuildConfig.CutterInflate * 2 else side
+	end
+	return Vector3.new(inflate(size.X), inflate(size.Y), inflate(size.Z))
 end
 
 -- Переносит на результат CSG всё, что важно для игры: метки владельца, физику и вид.
@@ -3689,64 +3773,120 @@ local function adopt(union: BasePart, original: BasePart)
 	end
 end
 
+-- Вычитает резак из одной детали. Результат встаёт на место исходной детали в том же
+-- родителе (папка Blocks или Model), поэтому составная модель остаётся цельной.
+local function subtract(target: BasePart, cutter: Part): (Outcome, BasePart?)
+	local parent = target.Parent
+	if not parent then
+		return "gone", nil -- деталь уже удалили
+	end
+
+	-- Резак накрыл деталь целиком: вычитать нечего (SubtractAsync вернул бы пустоту
+	-- и бросил ошибку), просто удаляем её.
+	if BuildGrid.isBoxInside(target.CFrame, target.Size, cutter.CFrame, cutter.Size) then
+		target:Destroy()
+		-- От составной модели ничего не осталось — убираем и пустую оболочку.
+		if parent:IsA("Model") and #BuildGrid.blockParts(parent) == 0 then
+			parent:Destroy()
+		end
+		return "removed", nil
+	end
+
+	local baseCFrame, baseSize = BlockCarver.getBase(target)
+	local cuts = BlockCarver.getCuts(target)
+
+	-- Цвет и материал резака задают вид стенок выреза — делаем их как у детали.
+	cutter.Material = target.Material
+	cutter.Color = target.Color
+
+	local ok, union = pcall(function()
+		return target:SubtractAsync(
+			{ cutter },
+			Enum.CollisionFidelity.PreciseConvexDecomposition, -- точная коллизия: в проём можно пройти
+			Enum.RenderFidelity.Automatic
+		)
+	end)
+
+	if not ok then
+		warn("[BlockCarver] SubtractAsync не справился:", union)
+		return "failed", nil
+	end
+	if typeof(union) ~= "Instance" or not union:IsA("BasePart") then
+		return "failed", nil
+	end
+	-- Пока шёл CSG, деталь могли снести или перенести в другое место иерархии.
+	if target.Parent ~= parent then
+		union:Destroy()
+		return "gone", nil
+	end
+
+	-- Рамку пересчитываем от текущего положения: за время CSG блок могли передвинуть.
+	baseCFrame = BlockCarver.getBase(target)
+	table.insert(cuts, {
+		c = SaveCodec.encodeCFrame(baseCFrame:ToObjectSpace(cutter.CFrame)),
+		z = SaveCodec.encodeVector(cutter.Size),
+	})
+
+	adopt(union, target)
+	union:SetAttribute(BASE_OFFSET, union.CFrame:ToObjectSpace(baseCFrame))
+	union:SetAttribute(BASE_SIZE, baseSize)
+	union:SetAttribute(CUTS, HttpService:JSONEncode(cuts))
+	union.Parent = parent
+	target:Destroy()
+	return "carved", union
+end
+
 -- Вырезает коробку (cutterCFrame, cutterSize) из каждой детали targets.
--- Цель — одиночный блок или деталь составной модели: результат CSG встаёт на место
--- исходной детали в том же родителе (папка Blocks или Model), поэтому модель остаётся цельной.
+-- Цель — одиночный блок или деталь составной модели.
 function BlockCarver.carve(targets: { BasePart }, cutterCFrame: CFrame, cutterSize: Vector3): CarveResult
 	local result: CarveResult = { carved = 0, removed = 0, failed = 0 }
-	local cutter = makeCutter(cutterCFrame, cutterSize)
+	local cutter = makeCutter(cutterCFrame, inflated(cutterSize))
 	cutter.Parent = workspace
 
 	for _, target in targets do
-		local parent = target.Parent
-		if not parent then
-			continue -- деталь уже удалили
-		end
-
-		-- Резак накрыл деталь целиком: вычитать нечего (SubtractAsync вернул бы пустоту
-		-- и бросил ошибку), просто удаляем её.
-		if BuildGrid.isBoxInside(target.CFrame, target.Size, cutter.CFrame, cutter.Size) then
-			target:Destroy()
+		local outcome = subtract(target, cutter)
+		if outcome == "carved" then
+			result.carved += 1
+		elseif outcome == "removed" then
 			result.removed += 1
-			-- От составной модели ничего не осталось — убираем и пустую оболочку.
-			if parent:IsA("Model") and #BuildGrid.blockParts(parent) == 0 then
-				parent:Destroy()
-			end
-			continue
-		end
-
-		-- Цвет и материал резака задают вид стенок выреза — делаем их как у детали.
-		cutter.Material = target.Material
-		cutter.Color = target.Color
-
-		local ok, union = pcall(function()
-			return target:SubtractAsync(
-				{ cutter },
-				Enum.CollisionFidelity.PreciseConvexDecomposition, -- точная коллизия: в проём можно пройти
-				Enum.RenderFidelity.Automatic
-			)
-		end)
-
-		if not ok then
-			warn("[BlockCarver] SubtractAsync не справился:", union)
-			result.failed += 1
-		elseif typeof(union) == "Instance" and union:IsA("BasePart") then
-			-- Пока шёл CSG, деталь могли снести или перенести в другое место иерархии.
-			if target.Parent == parent then
-				adopt(union, target)
-				union.Parent = parent
-				target:Destroy()
-				result.carved += 1
-			else
-				union:Destroy()
-			end
-		else
+		elseif outcome == "failed" then
 			result.failed += 1
 		end
 	end
 
 	cutter:Destroy()
 	return result
+end
+
+-- Загрузка сохранения: заново делает в свежей детали вырезы из её истории.
+-- Возвращает итоговую деталь (nil, если её не стало).
+function BlockCarver.replay(part: BasePart, cuts: unknown): BasePart?
+	if typeof(cuts) ~= "table" then
+		return part
+	end
+	local current: BasePart = part
+	for index, cut in cuts :: { unknown } do
+		if index > MAX_REPLAYED_CUTS or typeof(cut) ~= "table" then
+			break
+		end
+		local record = cut :: { [string]: unknown }
+		local relative = SaveCodec.decodeCFrame(record.c)
+		local size = SaveCodec.decodeVector(record.z)
+		if not relative or not size or math.min(size.X, size.Y, size.Z) <= 0 then
+			continue
+		end
+		local baseCFrame = BlockCarver.getBase(current)
+		local cutter = makeCutter(baseCFrame * relative, size)
+		cutter.Parent = workspace
+		local outcome, union = subtract(current, cutter)
+		cutter:Destroy()
+		if outcome == "carved" and union then
+			current = union
+		elseif outcome == "removed" or outcome == "gone" then
+			return nil
+		end
+	end
+	return current
 end
 
 return BlockCarver
@@ -3792,6 +3932,7 @@ return BlockMover
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
 
 local BlockPainter = {}
@@ -3803,6 +3944,8 @@ function BlockPainter.paint(part: BasePart, material: PaintCatalog.Material)
 	if part:IsA("PartOperation") then
 		part.UsePartColor = true -- иначе CSG-результат сохранит цвета исходных деталей
 	end
+	-- По этой метке покраска попадает в сохранение участка (PlotSerializer).
+	part:SetAttribute(BuildConfig.Attributes.PaintId, material.id)
 end
 
 return BlockPainter
@@ -3930,6 +4073,35 @@ local function buildInscription(tablet: PaintCatalog.Tablet, look: Look, parent:
 	body.Size = UDim2.fromScale(0.9, 0.63)
 end
 
+-- Создаёт плиту скрижали с надписью и вешает её на деталь. cframe — мировой CFrame плиты
+-- (лицевая грань Front смотрит наружу). Используется и при установке, и при загрузке сохранения.
+function TabletFactory.spawn(
+	part: BasePart,
+	tablet: PaintCatalog.Tablet,
+	cframe: CFrame,
+	width: number,
+	height: number
+): BasePart
+	local look = LOOKS[tablet.style]
+	local plaque = Instance.new("Part")
+	plaque.Name = "Tablet"
+	plaque.Size = Vector3.new(width, height, BuildConfig.TabletSize.Z)
+	plaque.CFrame = cframe
+	plaque.Anchored = true
+	plaque.CanCollide = false
+	plaque.CanQuery = false
+	plaque.CanTouch = false
+	plaque.CastShadow = false
+	plaque.Material = look.material
+	plaque.Color = look.color
+	plaque.TopSurface = Enum.SurfaceType.Smooth
+	plaque.BottomSurface = Enum.SurfaceType.Smooth
+	plaque:SetAttribute(BuildConfig.Attributes.TabletId, tablet.id)
+	buildInscription(tablet, look, plaque)
+	plaque.Parent = part
+	return plaque
+end
+
 -- Вешает скрижаль на грань детали part в точке попадания луча (hitPos, hitNormal — мировые).
 function TabletFactory.place(
 	plot: BasePart,
@@ -3986,24 +4158,8 @@ function TabletFactory.place(
 		end
 	end
 
-	local look = LOOKS[tablet.style]
-	local plaque = Instance.new("Part")
-	plaque.Name = "Tablet"
-	plaque.Size = Vector3.new(width, height, full.Z)
-	plaque.CFrame = CFrame.lookAt(position, position + normal, up) -- лицевая грань (Front) смотрит наружу
-	plaque.Anchored = true
-	plaque.CanCollide = false
-	plaque.CanQuery = false
-	plaque.CanTouch = false
-	plaque.CastShadow = false
-	plaque.Material = look.material
-	plaque.Color = look.color
-	plaque.TopSurface = Enum.SurfaceType.Smooth
-	plaque.BottomSurface = Enum.SurfaceType.Smooth
-	plaque:SetAttribute(BuildConfig.Attributes.TabletId, tablet.id)
-	buildInscription(tablet, look, plaque)
-	plaque.Parent = part
-	return plaque
+	-- Лицевая грань (Front) смотрит наружу.
+	return TabletFactory.spawn(part, tablet, CFrame.lookAt(position, position + normal, up), width, height)
 end
 
 -- Снимает все скрижали с грани детали, на которую указывает нормаль. Возвращает их число.
@@ -4035,6 +4191,595 @@ function TabletFactory.count(blocks: Instance): number
 end
 
 return TabletFactory
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD55"><Properties><string name="Name">PlotSerializer</string><string name="Source"><![CDATA[--!strict
+-- PlotSerializer (сервер): превращает постройки участка в таблицу для DataStore и обратно.
+-- Сохраняется не геометрия, а «рецепт»: тип блока, положение относительно плиты, размер,
+-- покраска, история вырезов и скрижали. При загрузке блок строится заново тем же кодом,
+-- что и при обычной установке, а затем на него накладываются изменения.
+--
+-- Формат (короткие ключи — сохранение компактнее):
+--   { v = 1, blocks = { Entry } }
+--   Entry: s — id формы, c — CFrame относительно плиты, z — свой размер, o — светильник погашен,
+--          для одиночного блока поля детали лежат прямо в Entry,
+--          для составного: q — { [номер детали] = поля детали }, x — номера удалённых деталей.
+--   Поля детали: p — id материала покраски, k — вырезы (BlockCarver.Cut), t — скрижали
+--          { i — id, c — CFrame относительно исходной рамки детали, w / h — ширина и высота }.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local BlockLibrary = require(ReplicatedStorage.Shared.BlockLibrary)
+local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
+local BuildSize = require(ReplicatedStorage.Shared.BuildSize)
+local LightEffects = require(ReplicatedStorage.Shared.LightEffects)
+local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
+
+local BlockCarver = require(script.Parent.BlockCarver)
+local BlockFactory = require(script.Parent.BlockFactory)
+local BlockPainter = require(script.Parent.BlockPainter)
+local SaveCodec = require(script.Parent.SaveCodec)
+local TabletFactory = require(script.Parent.TabletFactory)
+
+export type SaveData = {
+	v: number,
+	blocks: { { [string]: any } },
+}
+
+type Fields = { [string]: any }
+
+local VERSION = 1
+local YIELD_EVERY = 40 -- блоков между паузами при загрузке, чтобы сервер не замирал
+
+local Attributes = BuildConfig.Attributes
+
+local PlotSerializer = {}
+
+-- ===== Сохранение =====
+
+-- Покраска, вырезы и скрижали одной детали. Возвращает true, если что-то записано.
+local function writePart(part: BasePart, fields: Fields): boolean
+	local changed = false
+
+	local paintId = part:GetAttribute(Attributes.PaintId)
+	if typeof(paintId) == "string" then
+		fields.p = paintId
+		changed = true
+	end
+
+	local cuts = BlockCarver.getCuts(part)
+	if #cuts > 0 then
+		fields.k = cuts
+		changed = true
+	end
+
+	local baseCFrame = BlockCarver.getBase(part)
+	local tablets = {}
+	for _, child in part:GetChildren() do
+		local tabletId = child:GetAttribute(Attributes.TabletId)
+		if child:IsA("BasePart") and typeof(tabletId) == "string" then
+			table.insert(tablets, {
+				i = tabletId,
+				c = SaveCodec.encodeCFrame(baseCFrame:ToObjectSpace(child.CFrame)),
+				w = math.round(child.Size.X * 1000) / 1000,
+				h = math.round(child.Size.Y * 1000) / 1000,
+			})
+		end
+	end
+	if #tablets > 0 then
+		fields.t = tablets
+		changed = true
+	end
+	return changed
+end
+
+local function isCustom(size: Vector3, shape: BuildConfig.Shape): boolean
+	return (size - shape.size).Magnitude > 1e-3
+end
+
+function PlotSerializer.serialize(plot: BasePart, blocks: Instance, factionId: string): SaveData
+	local entries = {}
+	for _, block in blocks:GetChildren() do
+		local shapeId = block:GetAttribute(Attributes.ShapeId)
+		local shape = if typeof(shapeId) == "string" then BuildConfig.Shapes[shapeId] else nil
+		if not shape then
+			continue
+		end
+
+		local entry: Fields = { s = shape.id }
+		if block:IsA("BasePart") and not shape.prefab then
+			local baseCFrame, baseSize = BlockCarver.getBase(block)
+			entry.c = SaveCodec.encodeCFrame(plot.CFrame:ToObjectSpace(baseCFrame))
+			if isCustom(baseSize, shape) then
+				entry.z = SaveCodec.encodeVector(baseSize)
+			end
+			writePart(block, entry)
+		elseif block:IsA("Model") and shape.prefab then
+			entry.c = SaveCodec.encodeCFrame(plot.CFrame:ToObjectSpace(block:GetPivot()))
+			local size = block:GetAttribute(Attributes.Size)
+			if typeof(size) == "Vector3" and isCustom(size, shape) then
+				entry.z = SaveCodec.encodeVector(size)
+			end
+			if LightEffects.isOff(block) then
+				entry.o = true
+			end
+
+			local parts: Fields = {}
+			local present: { [number]: boolean } = {}
+			for _, child in block:GetChildren() do
+				local index = child:GetAttribute(Attributes.PieceIndex)
+				if child:IsA("BasePart") and typeof(index) == "number" then
+					present[index] = true
+					local fields: Fields = {}
+					if writePart(child, fields) then
+						parts[tostring(index)] = fields
+					end
+				end
+			end
+			if next(parts) then
+				entry.q = parts
+			end
+
+			local removed = {}
+			for index = 1, #BlockLibrary.getPieces(shape.id, factionId) do
+				if not present[index] then
+					table.insert(removed, index)
+				end
+			end
+			if #removed > 0 then
+				entry.x = removed
+			end
+		else
+			continue
+		end
+		table.insert(entries, entry)
+	end
+	return { v = VERSION, blocks = entries }
+end
+
+-- ===== Загрузка =====
+
+-- Накладывает на свежую деталь сохранённые покраску, скрижали и вырезы.
+local function readPart(part: BasePart, fields: unknown)
+	if typeof(fields) ~= "table" then
+		return
+	end
+	local data = fields :: Fields
+
+	local material = if typeof(data.p) == "string" then PaintCatalog.MaterialById[data.p] else nil
+	if material then
+		BlockPainter.paint(part, material)
+	end
+
+	-- Скрижали вешаем до вырезов: при CSG они переедут на результат вместе с деталью.
+	if typeof(data.t) == "table" then
+		local full = BuildConfig.TabletSize
+		for _, raw in data.t :: { unknown } do
+			if typeof(raw) ~= "table" then
+				continue
+			end
+			local record = raw :: Fields
+			local tablet = if typeof(record.i) == "string" then PaintCatalog.TabletById[record.i] else nil
+			local relative = SaveCodec.decodeCFrame(record.c)
+			local width, height = SaveCodec.number(record.w), SaveCodec.number(record.h)
+			if tablet and relative and width and height then
+				TabletFactory.spawn(
+					part,
+					tablet,
+					part.CFrame * relative,
+					math.clamp(width, 0.1, full.X),
+					math.clamp(height, 0.1, full.Y)
+				)
+			end
+		end
+	end
+
+	if data.k ~= nil then
+		BlockCarver.replay(part, data.k)
+	end
+end
+
+-- Строит один блок из записи. Возвращает false, если запись испорчена.
+local function restoreEntry(plot: BasePart, blocks: Instance, raw: unknown, factionId: string, owner: Player): boolean
+	if typeof(raw) ~= "table" then
+		return false
+	end
+	local entry = raw :: Fields
+	local shape = if typeof(entry.s) == "string" then BuildConfig.Shapes[entry.s] else nil
+	local relative = SaveCodec.decodeCFrame(entry.c)
+	if not shape or not relative then
+		return false
+	end
+
+	local size: Vector3? = nil
+	if entry.z ~= nil then
+		local low, high = BuildSize.limits(shape)
+		if not BuildSize.isValid(SaveCodec.decodeVector(entry.z), low, high) then
+			return false
+		end
+		size = SaveCodec.decodeVector(entry.z)
+	end
+
+	local block = BlockFactory.create(shape.id, factionId, plot.CFrame * relative, owner, size)
+	if not block then
+		return false
+	end
+	block.Parent = blocks -- CSG работает только с деталями в мире
+
+	if block:IsA("BasePart") then
+		readPart(block, entry)
+	else
+		local removed: { [number]: boolean } = {}
+		if typeof(entry.x) == "table" then
+			for _, index in entry.x :: { unknown } do
+				if typeof(index) == "number" then
+					removed[index] = true
+				end
+			end
+		end
+		local parts: Fields = if typeof(entry.q) == "table" then entry.q else {}
+		for _, child in block:GetChildren() do
+			local index = child:GetAttribute(Attributes.PieceIndex)
+			if child:IsA("BasePart") and typeof(index) == "number" then
+				if removed[index] then
+					child:Destroy()
+				else
+					readPart(child, parts[tostring(index)])
+				end
+			end
+		end
+		if entry.o == true and block.Parent then
+			LightEffects.setEnabled(block, false)
+		end
+	end
+	return true
+end
+
+-- Восстанавливает постройки из сохранения. Вызывается из корутины: CSG и паузы уступают управление.
+-- stillValid — проверка, что участок всё ещё принадлежит игроку (он мог выйти посреди загрузки).
+-- Возвращает число восстановленных блоков.
+function PlotSerializer.restore(
+	plot: BasePart,
+	blocks: Instance,
+	data: unknown,
+	factionId: string,
+	owner: Player,
+	stillValid: () -> boolean
+): number
+	if typeof(data) ~= "table" then
+		return 0
+	end
+	local entries = (data :: Fields).blocks
+	if typeof(entries) ~= "table" then
+		return 0
+	end
+
+	local restored = 0
+	for index, raw in entries :: { unknown } do
+		if index > BuildConfig.MaxBlocksPerPlayer or not stillValid() then
+			break
+		end
+		local ok, built = pcall(restoreEntry, plot, blocks, raw, factionId, owner)
+		if ok and built then
+			restored += 1
+		elseif not ok then
+			warn("[PlotSerializer] Блок из сохранения не восстановлен:", built)
+		end
+		if index % YIELD_EVERY == 0 then
+			task.wait()
+		end
+	end
+	return restored
+end
+
+return PlotSerializer
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD56"><Properties><string name="Name">SaveCodec</string><string name="Source"><![CDATA[--!strict
+-- SaveCodec (сервер): компактная запись CFrame и Vector3 в сохранение и строгий разбор обратно.
+-- Всё, что читается из сохранения, проверяется: не число, NaN или бесконечность — значит nil.
+
+local SaveCodec = {}
+
+local LIMIT = 1e6
+
+local function round(value: number, digits: number): number
+	local scale = 10 ^ digits
+	return math.round(value * scale) / scale
+end
+
+function SaveCodec.number(value: unknown): number?
+	if typeof(value) ~= "number" then
+		return nil
+	end
+	local n = value :: number
+	if n ~= n or math.abs(n) > LIMIT then
+		return nil
+	end
+	return n
+end
+
+local function numbers(value: unknown, count: number): { number }?
+	if typeof(value) ~= "table" then
+		return nil
+	end
+	local list = value :: { unknown }
+	local result: { number } = table.create(count)
+	for index = 1, count do
+		local n = SaveCodec.number(list[index])
+		if not n then
+			return nil
+		end
+		result[index] = n
+	end
+	return result
+end
+
+function SaveCodec.encodeVector(v: Vector3): { number }
+	return { round(v.X, 3), round(v.Y, 3), round(v.Z, 3) }
+end
+
+function SaveCodec.decodeVector(value: unknown): Vector3?
+	local n = numbers(value, 3)
+	return if n then Vector3.new(n[1], n[2], n[3]) else nil
+end
+
+-- Положение и три угла Эйлера (XYZ, радианы).
+function SaveCodec.encodeCFrame(cframe: CFrame): { number }
+	local rx, ry, rz = cframe:ToEulerAnglesXYZ()
+	return { round(cframe.X, 3), round(cframe.Y, 3), round(cframe.Z, 3), round(rx, 5), round(ry, 5), round(rz, 5) }
+end
+
+function SaveCodec.decodeCFrame(value: unknown): CFrame?
+	local n = numbers(value, 6)
+	return if n then CFrame.new(n[1], n[2], n[3]) * CFrame.fromEulerAnglesXYZ(n[4], n[5], n[6]) else nil
+end
+
+return SaveCodec
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD57"><Properties><string name="Name">SaveManager</string><string name="Source"><![CDATA[--!strict
+-- SaveManager (сервер): облачное сохранение участка в DataStore.
+--   * «Сохранить» / «Загрузить» из верхней панели клиента (RemoteEvent BuildConfig.SaveRemoteName);
+--   * при получении участка сохранение подгружается само, при выходе игрока — записывается само;
+--   * все обращения к DataStore обёрнуты в pcall: если хранилище недоступно (например, в Studio
+--     выключен доступ к API), игрок получает понятное сообщение, а игра продолжает работать.
+-- Автосохранение при выходе пишет данные, только если в этой сессии сохранение удалось
+-- прочитать (или его точно не было): иначе сбой загрузки затёр бы постройки пустым участком.
+
+local DataStoreService = game:GetService("DataStoreService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
+
+local PlotOwnership = require(script.Parent.PlotOwnership)
+local PlotSerializer = require(script.Parent.PlotSerializer)
+
+type StatusKind = "ok" | "error" | "info"
+
+local SHUTDOWN_WAIT = 15 -- секунд ждём незавершённые записи при остановке сервера
+
+local SaveManager = {}
+
+local remote: RemoteEvent? = nil
+local store: DataStore? = nil
+
+local synced: { [number]: boolean } = {} -- UserId -> сохранение прочитано, автосохранение безопасно
+local busy: { [number]: boolean } = {} -- UserId -> идёт сохранение или загрузка
+local lastSave: { [number]: number } = {}
+local pendingWrites = 0
+
+local function send(player: Player, kind: StatusKind, text: string)
+	if remote and player.Parent then
+		remote:FireClient(player, kind, text)
+	end
+end
+
+local function getStore(): DataStore?
+	if store then
+		return store
+	end
+	local ok, result = pcall(function()
+		return DataStoreService:GetDataStore(BuildConfig.SaveStoreName)
+	end)
+	if ok then
+		store = result
+		return result
+	end
+	warn("[SaveManager] DataStore недоступен:", result)
+	return nil
+end
+
+local function keyFor(userId: number): string
+	return "plot_" .. userId
+end
+
+local function unavailable(action: string): string
+	if RunService:IsStudio() then
+		return action
+			.. ": хранилище недоступно. В Studio включите Game Settings → Security → "
+			.. "Enable Studio Access to API Services (место должно быть опубликовано)"
+	end
+	return action .. ": хранилище сейчас недоступно, попробуйте позже"
+end
+
+local function read(userId: number): (boolean, any)
+	local dataStore = getStore()
+	if not dataStore then
+		return false, nil
+	end
+	local ok, result = pcall(function()
+		return dataStore:GetAsync(keyFor(userId))
+	end)
+	if not ok then
+		warn("[SaveManager] Чтение не удалось:", result)
+		return false, nil
+	end
+	return true, result
+end
+
+local function write(userId: number, data: PlotSerializer.SaveData): boolean
+	local dataStore = getStore()
+	if not dataStore then
+		return false
+	end
+	pendingWrites += 1
+	local ok, result = pcall(function()
+		dataStore:SetAsync(keyFor(userId), data)
+	end)
+	pendingWrites -= 1
+	if not ok then
+		warn("[SaveManager] Запись не удалась:", result)
+	end
+	return ok
+end
+
+local function blocksFolder(plot: Part): Instance
+	local folder = plot:FindFirstChild(BuildConfig.BlocksFolderName)
+	if folder then
+		return folder
+	end
+	local created = Instance.new("Folder")
+	created.Name = BuildConfig.BlocksFolderName
+	created.Parent = plot
+	return created
+end
+
+local function snapshot(claim: PlotOwnership.Claim): PlotSerializer.SaveData
+	return PlotSerializer.serialize(claim.plot, blocksFolder(claim.plot), claim.factionId)
+end
+
+-- ===== Действия игрока =====
+
+local function save(player: Player)
+	local userId = player.UserId
+	local claim = PlotOwnership.getClaim(player)
+	if not claim then
+		return
+	end
+	if busy[userId] then
+		send(player, "info", "Подождите: идёт сохранение или загрузка")
+		return
+	end
+	local now = os.clock()
+	if now - (lastSave[userId] or -math.huge) < BuildConfig.SaveCooldown then
+		send(player, "info", "Сохранять можно раз в несколько секунд")
+		return
+	end
+	lastSave[userId] = now
+
+	busy[userId] = true
+	local data = snapshot(claim)
+	local ok = write(userId, data)
+	busy[userId] = nil
+
+	if ok then
+		synced[userId] = true -- теперь в хранилище лежит именно этот участок
+		send(player, "ok", string.format("Сохранено! Блоков: %d", #data.blocks))
+	else
+		send(player, "error", unavailable("Не удалось сохранить"))
+	end
+end
+
+-- replace = true — кнопка «Загрузить»: нынешние постройки заменяются сохранёнными.
+local function load(player: Player, claim: PlotOwnership.Claim, replace: boolean)
+	local userId = player.UserId
+	if busy[userId] then
+		send(player, "info", "Подождите: идёт сохранение или загрузка")
+		return
+	end
+	busy[userId] = true
+
+	local function stillValid(): boolean
+		return PlotOwnership.getClaim(player) == claim and claim.plot.Parent ~= nil
+	end
+
+	local ok, data = read(userId)
+	if not stillValid() then
+		busy[userId] = nil
+		return
+	end
+	if not ok then
+		busy[userId] = nil
+		send(player, "error", unavailable("Не удалось загрузить"))
+		return
+	end
+	if data == nil then
+		busy[userId] = nil
+		synced[userId] = true -- сохранения нет: перезаписывать нечего
+		if replace then
+			send(player, "info", "Сохранений пока нет")
+		end
+		return
+	end
+
+	local blocks = blocksFolder(claim.plot)
+	if replace then
+		blocks:ClearAllChildren()
+	end
+	local restored = PlotSerializer.restore(claim.plot, blocks, data, claim.factionId, player, stillValid)
+	busy[userId] = nil
+	if stillValid() then
+		synced[userId] = true
+		send(player, "ok", string.format("Загружено! Блоков: %d", restored))
+	end
+end
+
+-- Автосохранение: снимок делается сразу (участок вот-вот удалят), запись идёт в фоне.
+local function autoSave(claim: PlotOwnership.Claim)
+	local userId = claim.player.UserId
+	local allowed = synced[userId] and not busy[userId]
+	synced[userId] = nil
+	busy[userId] = nil
+	lastSave[userId] = nil
+	if allowed then
+		local data = snapshot(claim)
+		task.spawn(write, userId, data)
+	end
+end
+
+function SaveManager.start()
+	if remote then
+		return
+	end
+	local created = Instance.new("RemoteEvent")
+	created.Name = BuildConfig.SaveRemoteName
+	created.Parent = ReplicatedStorage.Shared
+	remote = created
+
+	created.OnServerEvent:Connect(function(player: Player, action: unknown)
+		if action == "Save" then
+			save(player)
+		elseif action == "Load" then
+			local claim = PlotOwnership.getClaim(player)
+			if claim then
+				load(player, claim, true)
+			end
+		end
+	end)
+
+	-- Новый участок: подгружаем сохранённые постройки.
+	PlotOwnership.onClaim(function(claim: PlotOwnership.Claim)
+		load(claim.player, claim, false)
+	end)
+	-- Участок освобождается (игрок выходит): автосохранение.
+	PlotOwnership.onRelease(autoSave)
+
+	-- Остановка сервера: сохраняем всех и ждём, пока записи дойдут до хранилища.
+	game:BindToClose(function()
+		for _, player in Players:GetPlayers() do
+			local claim = PlotOwnership.getClaim(player)
+			if claim then
+				autoSave(claim)
+			end
+		end
+		local deadline = os.clock() + SHUTDOWN_WAIT
+		while pendingWrites > 0 and os.clock() < deadline do
+			task.wait(0.1)
+		end
+	end)
+end
+
+return SaveManager
 ]]></string></Properties></Item>
 </Item>
   </Item>
@@ -4109,8 +4854,8 @@ local GAP = 8
 local BlockPickerView = {}
 
 -- Над нижней панелью: её высота (84 + отступы) + нижний отступ + зазор.
-BlockPickerView.ShownPosition = UDim2.new(0.5, 0, 1, -136)
-BlockPickerView.HiddenPosition = UDim2.new(0.5, 0, 1, -116)
+BlockPickerView.ShownPosition = UDim2.new(0.5, 0, 1, -96)
+BlockPickerView.HiddenPosition = UDim2.new(0.5, 0, 1, -76)
 
 local function fitText(label: TextLabel, maxTextSize: number)
 	label.TextScaled = true
@@ -5194,10 +5939,10 @@ export type View = {
 	descriptionLabels: { [string]: TextLabel }, -- id слота -> подпись (у «Блоков» — текущая форма)
 }
 
-local SLOT_SIZE = Vector2.new(112, 84)
-local TOOL_SLOT_WIDTH = 210
-local PANEL_PADDING = 12
-local BOTTOM_MARGIN = 16
+local SLOT_SIZE = Vector2.new(92, 60)
+local TOOL_SLOT_WIDTH = 160
+local PANEL_PADDING = 8
+local BOTTOM_MARGIN = 10
 
 local BuildHudView = {}
 
@@ -5266,24 +6011,24 @@ function BuildHudView.build(playerGui: PlayerGui): View
 		button.LayoutOrder = index * 2
 
 		-- Внутри кнопки: название и подпись.
-		local name = UIFactory.label("SlotName", slot.displayName, 24, button)
-		name.Position = UDim2.fromOffset(6, 10)
-		name.Size = UDim2.new(1, -12, 0, 30)
-		scaleToFit(name, 26)
+		local name = UIFactory.label("SlotName", slot.displayName, 19, button)
+		name.Position = UDim2.fromOffset(6, 6)
+		name.Size = UDim2.new(1, -12, 0, 24)
+		scaleToFit(name, 20)
 
 		local description = UIFactory.label("SlotDescription", slot.description, 16, button)
 		description.Font = Theme.BodyFont
 		description.TextColor3 = Theme.SubTextColor
-		description.Position = UDim2.fromOffset(6, 46)
-		description.Size = UDim2.new(1, -12, 0, 24)
-		scaleToFit(description, 18)
+		description.Position = UDim2.fromOffset(6, 31)
+		description.Size = UDim2.new(1, -12, 0, 18)
+		scaleToFit(description, 14)
 
 		-- Полоска «выбрано» внизу кнопки (видна только у выбранного слота).
 		local bar = Instance.new("Frame")
 		bar.Name = "SelectionBar"
 		bar.AnchorPoint = Vector2.new(0.5, 1)
-		bar.Position = UDim2.new(0.5, 0, 1, -6)
-		bar.Size = UDim2.new(0.6, 0, 0, 4)
+		bar.Position = UDim2.new(0.5, 0, 1, -4)
+		bar.Size = UDim2.new(0.5, 0, 0, 3)
 		bar.BackgroundColor3 = Theme.SelectedStroke
 		bar.BorderSizePixel = 0
 		bar.Visible = false
@@ -5345,6 +6090,7 @@ local BlockCatalog = require(ReplicatedStorage.Shared.BlockCatalog)
 local BuildHudView = require(script.Parent.BuildHudView)
 local BlockPickerController = require(script.Parent.BlockPickerController)
 local PaintMenuController = require(script.Parent.PaintMenuController)
+local TopHudController = require(script.Parent.TopHudController)
 local ScaleSettings = require(script.Parent.ScaleSettings)
 local Theme = require(script.Parent.Theme)
 
@@ -5374,6 +6120,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	local view = BuildHudView.build(playerGui)
 	local picker = BlockPickerController.new(view.gui)
 	PaintMenuController.attach(view.gui)
+	TopHudController.attach(playerGui) -- верхняя панель: время суток и сохранение
 
 	local shapeId: string? = nil
 	local toolId: string? = nil
@@ -5510,6 +6257,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	-- Шаг 3. Появление и скрытие панели.
 	local function show()
 		visible = true
+		TopHudController.show()
 		view.panel.Position = BuildHudView.PanelHiddenPosition
 		view.gui.Enabled = true
 		TweenService:Create(view.panel, Theme.TweenInfo, { Position = BuildHudView.PanelShownPosition }):Play()
@@ -5520,6 +6268,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 		visible = false
 		picker.close()
 		PaintMenuController.close()
+		TopHudController.hide()
 		local tween = TweenService:Create(view.panel, Theme.TweenInfo, { Position = BuildHudView.PanelHiddenPosition })
 		tween.Completed:Once(function()
 			if not visible then
@@ -5571,8 +6320,11 @@ local Theme = {
 	PrimaryButtonColor = Color3.fromRGB(170, 130, 60),
 	SecondaryButtonColor = Color3.fromRGB(70, 58, 44),
 
-	CornerRadius = UDim.new(0, 10),
-	StrokeThickness = 2,
+	PanelTransparency = 0.06, -- панели чуть просвечивают: мир за ними не пропадает
+	CornerRadius = UDim.new(0, 8),
+	StrokeThickness = 1.5,
+	StrokeTransparency = 0.25, -- тонкая приглушённая золотая кайма
+	HoverTweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 
 	TweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 
@@ -5612,6 +6364,7 @@ local function decorate(instance: GuiObject, strokeColor: Color3?)
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = strokeColor or Theme.PanelStroke
 	stroke.Thickness = Theme.StrokeThickness
+	stroke.Transparency = Theme.StrokeTransparency
 	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	stroke.Parent = instance
 end
@@ -5637,6 +6390,7 @@ function UIFactory.panel(name: string, size: UDim2, parent: Instance): Frame
 	frame.Position = UDim2.fromScale(0.5, 0.5)
 	frame.Size = size
 	frame.BackgroundColor3 = Theme.PanelColor
+	frame.BackgroundTransparency = Theme.PanelTransparency
 	frame.BorderSizePixel = 0
 	frame.Parent = parent
 	decorate(frame)
@@ -5674,11 +6428,19 @@ function UIFactory.button(name: string, text: string, color: Color3, parent: Ins
 	decorate(button, strokeColor)
 
 	local hoverColor = color:Lerp(Color3.new(1, 1, 1), 0.15)
+	-- Наведение: кнопка светлеет, а кайма становится ярче.
+	local stroke = button:FindFirstChildOfClass("UIStroke")
+	local function hover(background: Color3, strokeTransparency: number)
+		TweenService:Create(button, Theme.HoverTweenInfo, { BackgroundColor3 = background }):Play()
+		if stroke then
+			TweenService:Create(stroke, Theme.HoverTweenInfo, { Transparency = strokeTransparency }):Play()
+		end
+	end
 	button.MouseEnter:Connect(function()
-		TweenService:Create(button, Theme.TweenInfo, { BackgroundColor3 = hoverColor }):Play()
+		hover(hoverColor, 0)
 	end)
 	button.MouseLeave:Connect(function()
-		TweenService:Create(button, Theme.TweenInfo, { BackgroundColor3 = color }):Play()
+		hover(color, Theme.StrokeTransparency)
 	end)
 
 	return button
@@ -6684,6 +7446,23 @@ local function nudgeAxis(axis: number, direction: number)
 end
 
 -- Создаёт панель при первом показе и подключает кнопки.
+local collapsed = false
+
+-- Раскрытая панель стоит у правого края; свёрнутая уезжает за него, остаётся кнопка «<».
+local function applyCollapse(v: BuildSettingsView.View)
+	v.collapseButton.Text = if collapsed then "<" else ">"
+	TweenService:Create(v.panel, Theme.TweenInfo, {
+		Position = if collapsed
+			then BuildSettingsView.PanelHiddenPosition
+			else BuildSettingsView.PanelShownPosition,
+	}):Play()
+	TweenService:Create(v.collapseButton, Theme.TweenInfo, {
+		Position = if collapsed
+			then BuildSettingsView.ToggleCollapsedPosition
+			else BuildSettingsView.ToggleShownPosition,
+	}):Play()
+end
+
 local function ensureView(): BuildSettingsView.View
 	local existing = view
 	if existing then
@@ -6763,6 +7542,11 @@ local function ensureView(): BuildSettingsView.View
 		resetRequested:Fire()
 	end)
 
+	created.collapseButton.Activated:Connect(function()
+		collapsed = not collapsed
+		applyCollapse(created)
+	end)
+
 	refresh()
 	return created
 end
@@ -6836,7 +7620,7 @@ function BuildSettingsController.show()
 	visible = true
 	v.panel.Position = BuildSettingsView.PanelHiddenPosition
 	v.gui.Enabled = true
-	TweenService:Create(v.panel, Theme.TweenInfo, { Position = BuildSettingsView.PanelShownPosition }):Play()
+	applyCollapse(v) -- панель появляется в том виде, в каком её оставили
 end
 
 -- Плавно убрать панель.
@@ -6881,6 +7665,7 @@ export type View = {
 	gui: ScreenGui,
 	uiScale: UIScale, -- масштаб панели (синхронизируется с настройками меню)
 	panel: Frame,
+	collapseButton: TextButton, -- «>» прячет панель за край экрана, «<» возвращает
 	modeLabel: TextLabel, -- текущий режим: установка / резак / снос
 	gridLabel: TextLabel,
 	gridButtons: { TextButton }, -- по индексам BuildConfig.GridOptions
@@ -6918,6 +7703,10 @@ local BuildSettingsView = {}
 -- Положения панели для анимации: у правого края и за экраном.
 BuildSettingsView.PanelShownPosition = UDim2.new(1, -RIGHT_MARGIN, 0, TOP_OFFSET)
 BuildSettingsView.PanelHiddenPosition = UDim2.new(1, PANEL_WIDTH + 60, 0, TOP_OFFSET)
+
+-- Кнопка сворачивания: у левого края раскрытой панели или у края экрана, когда панель спрятана.
+BuildSettingsView.ToggleShownPosition = UDim2.new(1, -(RIGHT_MARGIN + PANEL_WIDTH + 6), 0, TOP_OFFSET)
+BuildSettingsView.ToggleCollapsedPosition = UDim2.new(1, -RIGHT_MARGIN, 0, TOP_OFFSET)
 
 -- Ограничивает максимальный размер текста при TextScaled.
 local function scaleToFit(label: TextLabel, maxTextSize: number)
@@ -7032,6 +7821,13 @@ function BuildSettingsView.build(playerGui: PlayerGui): View
 	panel.AutomaticSize = Enum.AutomaticSize.Y
 	panel.Active = true -- клики по фону панели не уходят в мир (не ставят блок)
 	UIFactory.verticalList(panel, PANEL_PADDING)
+
+	-- Кнопка сворачивания живёт рядом с панелью, а не внутри: она остаётся на экране.
+	local collapseButton = UIFactory.button("Collapse", ">", Theme.SecondaryButtonColor, gui)
+	collapseButton.TextSize = 18
+	collapseButton.AnchorPoint = Vector2.new(1, 0)
+	collapseButton.Position = BuildSettingsView.ToggleCollapsedPosition
+	collapseButton.Size = UDim2.fromOffset(26, 34)
 
 	local order = 0
 	local function nextOrder(): number
@@ -7171,6 +7967,7 @@ function BuildSettingsView.build(playerGui: PlayerGui): View
 		gui = gui,
 		uiScale = uiScale,
 		panel = panel,
+		collapseButton = collapseButton,
 		modeLabel = modeLabel,
 		gridLabel = gridLabel,
 		gridButtons = gridButtons,
@@ -7708,8 +8505,8 @@ PaintMenuView.Tabs = {
 }
 
 -- Над нижней панелью, на месте каталога блоков (одновременно они не открываются).
-PaintMenuView.ShownPosition = UDim2.new(0.5, 0, 1, -136)
-PaintMenuView.HiddenPosition = UDim2.new(0.5, 0, 1, -116)
+PaintMenuView.ShownPosition = UDim2.new(0.5, 0, 1, -96)
+PaintMenuView.HiddenPosition = UDim2.new(0.5, 0, 1, -76)
 
 local function fitText(label: TextLabel, maxTextSize: number)
 	label.TextScaled = true
@@ -7949,6 +8746,478 @@ function LightFlicker.start()
 end
 
 return LightFlicker
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD58"><Properties><string name="Name">TimeOfDayController</string><string name="Source"><![CDATA[--!strict
+-- TimeOfDayController (клиент): время суток — день, закат, ночь.
+-- Освещение меняется только у этого игрока (свойства Lighting на клиенте локальны),
+-- поэтому каждый смотрит на свой храм в удобное ему время. Переход плавный.
+
+local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+
+export type Preset = {
+	id: string,
+	label: string,
+	clockTime: number,
+	brightness: number,
+	ambient: Color3,
+	outdoorAmbient: Color3,
+	colorShiftTop: Color3,
+	exposure: number,
+	-- Атмосфера: дымка и оттенок неба у горизонта
+	density: number,
+	haze: number,
+	glare: number,
+	atmosphereColor: Color3,
+	atmosphereDecay: Color3,
+}
+
+local TRANSITION = TweenInfo.new(1.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+
+local TimeOfDayController = {}
+
+TimeOfDayController.Presets = {
+	{
+		id = "Day",
+		label = "День",
+		clockTime = 14,
+		brightness = 3,
+		ambient = Color3.fromRGB(70, 70, 70),
+		outdoorAmbient = Color3.fromRGB(128, 128, 128),
+		colorShiftTop = Color3.fromRGB(0, 0, 0),
+		exposure = 0,
+		density = 0.3,
+		haze = 0,
+		glare = 0,
+		atmosphereColor = Color3.fromRGB(199, 199, 199),
+		atmosphereDecay = Color3.fromRGB(106, 112, 125),
+	},
+	{
+		id = "Sunset",
+		label = "Закат",
+		clockTime = 18.2,
+		brightness = 2,
+		ambient = Color3.fromRGB(92, 66, 54),
+		outdoorAmbient = Color3.fromRGB(150, 104, 78),
+		colorShiftTop = Color3.fromRGB(255, 150, 70),
+		exposure = 0.1,
+		density = 0.36,
+		haze = 1.8,
+		glare = 0.4,
+		atmosphereColor = Color3.fromRGB(255, 172, 110),
+		atmosphereDecay = Color3.fromRGB(255, 112, 60),
+	},
+	{
+		id = "Night",
+		label = "Ночь",
+		clockTime = 0,
+		brightness = 1.2,
+		-- Тёмное окружение: факелы, жаровни и обелиски становятся главным светом.
+		ambient = Color3.fromRGB(14, 16, 24),
+		outdoorAmbient = Color3.fromRGB(28, 32, 48),
+		colorShiftTop = Color3.fromRGB(0, 0, 0),
+		exposure = 0,
+		density = 0.25,
+		haze = 0,
+		glare = 0,
+		atmosphereColor = Color3.fromRGB(30, 36, 60),
+		atmosphereDecay = Color3.fromRGB(10, 12, 24),
+	},
+} :: { Preset }
+
+TimeOfDayController.DefaultId = "Day"
+
+local currentId: string? = nil
+
+local function getAtmosphere(): Atmosphere
+	local existing = Lighting:FindFirstChildOfClass("Atmosphere")
+	if existing then
+		return existing
+	end
+	local created = Instance.new("Atmosphere")
+	created.Parent = Lighting
+	return created
+end
+
+function TimeOfDayController.getCurrent(): string?
+	return currentId
+end
+
+function TimeOfDayController.set(id: string, instant: boolean?)
+	local preset: Preset? = nil
+	for _, candidate in TimeOfDayController.Presets do
+		if candidate.id == id then
+			preset = candidate
+		end
+	end
+	if not preset then
+		return
+	end
+	currentId = id
+
+	-- Часы идут кратчайшим путём: к полуночи из вечера — вперёд через 24, а не назад через день.
+	local clock = preset.clockTime
+	if clock - Lighting.ClockTime < -12 then
+		clock += 24
+	elseif clock - Lighting.ClockTime > 12 then
+		clock -= 24
+	end
+
+	local lightingGoal = {
+		Brightness = preset.brightness,
+		Ambient = preset.ambient,
+		OutdoorAmbient = preset.outdoorAmbient,
+		ColorShift_Top = preset.colorShiftTop,
+		ExposureCompensation = preset.exposure,
+	}
+	local atmosphereGoal = {
+		Density = preset.density,
+		Haze = preset.haze,
+		Glare = preset.glare,
+		Color = preset.atmosphereColor,
+		Decay = preset.atmosphereDecay,
+	}
+
+	local atmosphere = getAtmosphere()
+	local info = if instant then TweenInfo.new(0) else TRANSITION
+	TweenService:Create(Lighting, info, lightingGoal):Play()
+	TweenService:Create(atmosphere, info, atmosphereGoal):Play()
+
+	-- ClockTime за пределами 0..24 двигаем вручную через промежуточное значение.
+	local start = Lighting.ClockTime
+	local value = Instance.new("NumberValue")
+	value.Value = start
+	value.Changed:Connect(function(v: number)
+		if currentId == id then
+			Lighting.ClockTime = v % 24
+		end
+	end)
+	local clockTween = TweenService:Create(value, info, { Value = clock })
+	clockTween.Completed:Once(function()
+		if currentId == id then
+			Lighting.ClockTime = preset.clockTime
+		end
+		value:Destroy()
+	end)
+	clockTween:Play()
+end
+
+return TimeOfDayController
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD59"><Properties><string name="Name">TopHudController</string><string name="Source"><![CDATA[--!strict
+-- TopHudController: логика верхней панели — время суток и сохранение участка.
+--   * «День» / «Закат» / «Ночь» переключают освещение (TimeOfDayController);
+--   * «Сохранить» и «Загрузить» отправляют запрос на сервер (SaveManager), ответ приходит
+--     тем же RemoteEvent и показывается строкой статуса;
+--   * «Загрузить» заменяет нынешние постройки, поэтому требует повторного клика.
+-- Панель появляется и прячется вместе с нижней строительной панелью (BuildHudController).
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
+local ScaleSettings = require(script.Parent.ScaleSettings)
+local Theme = require(script.Parent.Theme)
+local TimeOfDayController = require(script.Parent.TimeOfDayController)
+local TopHudView = require(script.Parent.TopHudView)
+
+local STATUS_DURATION = 5
+local CONFIRM_DURATION = 4
+local LOAD_TEXT = "Загрузить"
+local CONFIRM_TEXT = "Заменить?"
+
+local STATUS_COLORS: { [string]: Color3 } = {
+	ok = Color3.fromRGB(150, 230, 140),
+	error = Color3.fromRGB(255, 130, 110),
+	info = Theme.TextColor,
+}
+
+local TopHudController = {}
+
+local view: TopHudView.View? = nil
+local visible = false
+local statusToken = 0
+local confirmToken = 0
+local confirming = false
+
+local function setSelected(button: TextButton, selected: boolean)
+	local stroke = button:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		stroke.Color = if selected then Theme.SelectedStroke else Theme.PanelStroke
+		stroke.Thickness = if selected then Theme.StrokeThickness + 1.5 else Theme.StrokeThickness
+	end
+end
+
+local function refreshTime()
+	local v = view
+	if v then
+		for id, button in v.timeButtons do
+			setSelected(button, id == TimeOfDayController.getCurrent())
+		end
+	end
+end
+
+local function showStatus(kind: string, text: string)
+	local v = view
+	if not v then
+		return
+	end
+	statusToken += 1
+	local token = statusToken
+	v.statusLabel.Text = text
+	v.statusLabel.TextColor3 = STATUS_COLORS[kind] or Theme.TextColor
+	v.statusLabel.Visible = true
+	task.delay(STATUS_DURATION, function()
+		if statusToken == token then
+			v.statusLabel.Visible = false
+		end
+	end)
+end
+
+local function resetConfirm()
+	confirming = false
+	local v = view
+	if v then
+		v.loadButton.Text = LOAD_TEXT
+	end
+end
+
+-- Создаёт панель (один раз) и подключает кнопки.
+function TopHudController.attach(playerGui: PlayerGui)
+	if view then
+		return
+	end
+	local created = TopHudView.build(playerGui)
+	view = created
+
+	created.uiScale.Scale = ScaleSettings.get()
+	ScaleSettings.Changed:Connect(function(scale: number, instant: boolean)
+		if instant then
+			created.uiScale.Scale = scale
+		else
+			TweenService:Create(created.uiScale, Theme.TweenInfo, { Scale = scale }):Play()
+		end
+	end)
+
+	for id, button in created.timeButtons do
+		button.Activated:Connect(function()
+			TimeOfDayController.set(id)
+			refreshTime()
+		end)
+	end
+
+	-- RemoteEvent создаёт сервер при старте; ждём его в фоне, чтобы не задерживать меню.
+	local remote: RemoteEvent? = nil
+	task.spawn(function()
+		local found = ReplicatedStorage:WaitForChild("Shared"):WaitForChild(BuildConfig.SaveRemoteName, 30)
+		if found and found:IsA("RemoteEvent") then
+			remote = found
+			found.OnClientEvent:Connect(function(kind: unknown, text: unknown)
+				if typeof(kind) == "string" and typeof(text) == "string" then
+					showStatus(kind, text)
+				end
+			end)
+		end
+	end)
+
+	local function request(action: string, pendingText: string)
+		if remote then
+			showStatus("info", pendingText)
+			remote:FireServer(action)
+		else
+			showStatus("error", "Сохранение недоступно: сервер не ответил")
+		end
+	end
+
+	created.saveButton.Activated:Connect(function()
+		resetConfirm()
+		request("Save", "Сохранение…")
+	end)
+
+	created.loadButton.Activated:Connect(function()
+		if not confirming then
+			-- Первый клик только спрашивает: загрузка заменит всё, что построено сейчас.
+			confirming = true
+			confirmToken += 1
+			local token = confirmToken
+			created.loadButton.Text = CONFIRM_TEXT
+			showStatus("info", "Загрузка заменит нынешние постройки сохранёнными. Нажмите ещё раз")
+			task.delay(CONFIRM_DURATION, function()
+				if confirmToken == token then
+					resetConfirm()
+				end
+			end)
+			return
+		end
+		confirmToken += 1
+		resetConfirm()
+		request("Load", "Загрузка…")
+	end)
+
+	TimeOfDayController.set(TimeOfDayController.DefaultId, true)
+	refreshTime()
+end
+
+function TopHudController.show()
+	local v = view
+	if not v then
+		return
+	end
+	visible = true
+	v.panel.Position = TopHudView.PanelHiddenPosition
+	v.gui.Enabled = true
+	TweenService:Create(v.panel, Theme.TweenInfo, { Position = TopHudView.PanelShownPosition }):Play()
+end
+
+function TopHudController.hide()
+	local v = view
+	if not v then
+		return
+	end
+	visible = false
+	resetConfirm()
+	local tween = TweenService:Create(v.panel, Theme.TweenInfo, { Position = TopHudView.PanelHiddenPosition })
+	tween.Completed:Once(function()
+		if not visible then
+			v.gui.Enabled = false
+		end
+	end)
+	tween:Play()
+end
+
+return TopHudController
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD60"><Properties><string name="Name">TopHudView</string><string name="Source"><![CDATA[--!strict
+-- TopHudView: компактная верхняя панель строительства.
+-- Слева — переключатель «Время суток», справа — «Сохранить» / «Загрузить»; под панелью
+-- всплывает строка статуса. Только создаёт GUI; логика — в TopHudController.
+
+local Theme = require(script.Parent.Theme)
+local TimeOfDayController = require(script.Parent.TimeOfDayController)
+local UIFactory = require(script.Parent.UIFactory)
+
+export type View = {
+	gui: ScreenGui,
+	uiScale: UIScale,
+	panel: Frame,
+	timeButtons: { [string]: TextButton }, -- id времени суток -> кнопка
+	saveButton: TextButton,
+	loadButton: TextButton,
+	statusLabel: TextLabel,
+}
+
+local BUTTON_HEIGHT = 28
+local TIME_BUTTON_WIDTH = 62
+local ACTION_BUTTON_WIDTH = 96
+local PANEL_PADDING = 6
+local TOP_MARGIN = 8
+
+local TopHudView = {}
+
+TopHudView.PanelShownPosition = UDim2.new(0.5, 0, 0, TOP_MARGIN)
+TopHudView.PanelHiddenPosition = UDim2.new(0.5, 0, 0, -80)
+
+local function compactButton(name: string, text: string, color: Color3, width: number, order: number, parent: Instance): TextButton
+	local button = UIFactory.button(name, text, color, parent)
+	button.TextSize = 16
+	button.Size = UDim2.fromOffset(width, BUTTON_HEIGHT)
+	button.LayoutOrder = order
+	return button
+end
+
+function TopHudView.build(playerGui: PlayerGui): View
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "TopHud"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.DisplayOrder = 5
+	gui.Enabled = false
+
+	local uiScale = Instance.new("UIScale")
+	uiScale.Parent = gui
+
+	local panel = UIFactory.panel("Panel", UDim2.fromOffset(0, 0), gui)
+	panel.AnchorPoint = Vector2.new(0.5, 0)
+	panel.Position = TopHudView.PanelHiddenPosition
+	panel.AutomaticSize = Enum.AutomaticSize.XY
+	panel.Active = true -- клики по фону панели не уходят в мир
+	UIFactory.horizontalList(panel, PANEL_PADDING)
+
+	local order = 0
+	local function nextOrder(): number
+		order += 1
+		return order
+	end
+
+	local caption = UIFactory.label("TimeCaption", "Время суток", 15, panel)
+	caption.Font = Theme.BodyFont
+	caption.TextColor3 = Theme.SubTextColor
+	caption.Size = UDim2.fromOffset(86, BUTTON_HEIGHT)
+	caption.LayoutOrder = nextOrder()
+
+	local timeButtons: { [string]: TextButton } = {}
+	for _, preset in TimeOfDayController.Presets do
+		timeButtons[preset.id] = compactButton(
+			preset.id .. "Time",
+			preset.label,
+			Theme.SecondaryButtonColor,
+			TIME_BUTTON_WIDTH,
+			nextOrder(),
+			panel
+		)
+	end
+
+	local separator = Instance.new("Frame")
+	separator.Name = "Separator"
+	separator.Size = UDim2.fromOffset(1, BUTTON_HEIGHT - 8)
+	separator.BackgroundColor3 = Theme.PanelStroke
+	separator.BackgroundTransparency = 0.5
+	separator.BorderSizePixel = 0
+	separator.LayoutOrder = nextOrder()
+	separator.Parent = panel
+
+	local saveButton =
+		compactButton("Save", "Сохранить", Theme.PrimaryButtonColor, ACTION_BUTTON_WIDTH, nextOrder(), panel)
+	local loadButton =
+		compactButton("Load", "Загрузить", Theme.SecondaryButtonColor, ACTION_BUTTON_WIDTH, nextOrder(), panel)
+
+	-- Статус под панелью: «Сохранено!», «Загружено!» или причина ошибки.
+	local statusLabel = UIFactory.label("Status", "", 16, gui)
+	statusLabel.Font = Theme.BodyFont
+	statusLabel.AnchorPoint = Vector2.new(0.5, 0)
+	statusLabel.Position = UDim2.new(0.5, 0, 0, TOP_MARGIN + BUTTON_HEIGHT + PANEL_PADDING * 2 + 6)
+	statusLabel.Size = UDim2.fromOffset(520, 0)
+	statusLabel.AutomaticSize = Enum.AutomaticSize.Y
+	statusLabel.BackgroundColor3 = Theme.PanelColor
+	statusLabel.BackgroundTransparency = 0.15
+	statusLabel.Visible = false
+
+	local statusCorner = Instance.new("UICorner")
+	statusCorner.CornerRadius = Theme.CornerRadius
+	statusCorner.Parent = statusLabel
+
+	local statusPadding = Instance.new("UIPadding")
+	statusPadding.PaddingTop = UDim.new(0, 4)
+	statusPadding.PaddingBottom = UDim.new(0, 4)
+	statusPadding.PaddingLeft = UDim.new(0, 10)
+	statusPadding.PaddingRight = UDim.new(0, 10)
+	statusPadding.Parent = statusLabel
+
+	gui.Parent = playerGui
+
+	return {
+		gui = gui,
+		uiScale = uiScale,
+		panel = panel,
+		timeButtons = timeButtons,
+		saveButton = saveButton,
+		loadButton = loadButton,
+		statusLabel = statusLabel,
+	}
+end
+
+return TopHudView
 ]]></string></Properties></Item>
 </Item>
       </Item>

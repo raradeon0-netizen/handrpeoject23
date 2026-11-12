@@ -974,8 +974,10 @@ function BlockLibrary.buildModel(shapeId: string, factionId: string?, cframe: CF
 
 	local model = Instance.new("Model")
 	model.Name = shapeId
-	for _, piece in pieces do
+	for index, piece in pieces do
 		local part = BlockLibrary.makePart(piece)
+		-- По номеру детали сохранение находит её после перестройки модели.
+		part:SetAttribute(BuildConfig.Attributes.PieceIndex, index)
 		local look = palette[piece.role]
 		local color = piece.color or look.color
 		local shade = piece.shade

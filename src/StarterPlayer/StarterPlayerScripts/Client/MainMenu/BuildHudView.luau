@@ -18,10 +18,10 @@ export type View = {
 	descriptionLabels: { [string]: TextLabel }, -- id слота -> подпись (у «Блоков» — текущая форма)
 }
 
-local SLOT_SIZE = Vector2.new(112, 84)
-local TOOL_SLOT_WIDTH = 210
-local PANEL_PADDING = 12
-local BOTTOM_MARGIN = 16
+local SLOT_SIZE = Vector2.new(92, 60)
+local TOOL_SLOT_WIDTH = 160
+local PANEL_PADDING = 8
+local BOTTOM_MARGIN = 10
 
 local BuildHudView = {}
 
@@ -90,24 +90,24 @@ function BuildHudView.build(playerGui: PlayerGui): View
 		button.LayoutOrder = index * 2
 
 		-- Внутри кнопки: название и подпись.
-		local name = UIFactory.label("SlotName", slot.displayName, 24, button)
-		name.Position = UDim2.fromOffset(6, 10)
-		name.Size = UDim2.new(1, -12, 0, 30)
-		scaleToFit(name, 26)
+		local name = UIFactory.label("SlotName", slot.displayName, 19, button)
+		name.Position = UDim2.fromOffset(6, 6)
+		name.Size = UDim2.new(1, -12, 0, 24)
+		scaleToFit(name, 20)
 
 		local description = UIFactory.label("SlotDescription", slot.description, 16, button)
 		description.Font = Theme.BodyFont
 		description.TextColor3 = Theme.SubTextColor
-		description.Position = UDim2.fromOffset(6, 46)
-		description.Size = UDim2.new(1, -12, 0, 24)
-		scaleToFit(description, 18)
+		description.Position = UDim2.fromOffset(6, 31)
+		description.Size = UDim2.new(1, -12, 0, 18)
+		scaleToFit(description, 14)
 
 		-- Полоска «выбрано» внизу кнопки (видна только у выбранного слота).
 		local bar = Instance.new("Frame")
 		bar.Name = "SelectionBar"
 		bar.AnchorPoint = Vector2.new(0.5, 1)
-		bar.Position = UDim2.new(0.5, 0, 1, -6)
-		bar.Size = UDim2.new(0.6, 0, 0, 4)
+		bar.Position = UDim2.new(0.5, 0, 1, -4)
+		bar.Size = UDim2.new(0.5, 0, 0, 3)
 		bar.BackgroundColor3 = Theme.SelectedStroke
 		bar.BorderSizePixel = 0
 		bar.Visible = false

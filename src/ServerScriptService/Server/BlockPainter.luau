@@ -4,6 +4,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
 
 local BlockPainter = {}
@@ -15,6 +16,8 @@ function BlockPainter.paint(part: BasePart, material: PaintCatalog.Material)
 	if part:IsA("PartOperation") then
 		part.UsePartColor = true -- иначе CSG-результат сохранит цвета исходных деталей
 	end
+	-- По этой метке покраска попадает в сохранение участка (PlotSerializer).
+	part:SetAttribute(BuildConfig.Attributes.PaintId, material.id)
 end
 
 return BlockPainter

@@ -20,6 +20,7 @@ export type View = {
 	gui: ScreenGui,
 	uiScale: UIScale, -- масштаб панели (синхронизируется с настройками меню)
 	panel: Frame,
+	collapseButton: TextButton, -- «>» прячет панель за край экрана, «<» возвращает
 	modeLabel: TextLabel, -- текущий режим: установка / резак / снос
 	gridLabel: TextLabel,
 	gridButtons: { TextButton }, -- по индексам BuildConfig.GridOptions
@@ -57,6 +58,10 @@ local BuildSettingsView = {}
 -- Положения панели для анимации: у правого края и за экраном.
 BuildSettingsView.PanelShownPosition = UDim2.new(1, -RIGHT_MARGIN, 0, TOP_OFFSET)
 BuildSettingsView.PanelHiddenPosition = UDim2.new(1, PANEL_WIDTH + 60, 0, TOP_OFFSET)
+
+-- Кнопка сворачивания: у левого края раскрытой панели или у края экрана, когда панель спрятана.
+BuildSettingsView.ToggleShownPosition = UDim2.new(1, -(RIGHT_MARGIN + PANEL_WIDTH + 6), 0, TOP_OFFSET)
+BuildSettingsView.ToggleCollapsedPosition = UDim2.new(1, -RIGHT_MARGIN, 0, TOP_OFFSET)
 
 -- Ограничивает максимальный размер текста при TextScaled.
 local function scaleToFit(label: TextLabel, maxTextSize: number)
@@ -171,6 +176,13 @@ function BuildSettingsView.build(playerGui: PlayerGui): View
 	panel.AutomaticSize = Enum.AutomaticSize.Y
 	panel.Active = true -- клики по фону панели не уходят в мир (не ставят блок)
 	UIFactory.verticalList(panel, PANEL_PADDING)
+
+	-- Кнопка сворачивания живёт рядом с панелью, а не внутри: она остаётся на экране.
+	local collapseButton = UIFactory.button("Collapse", ">", Theme.SecondaryButtonColor, gui)
+	collapseButton.TextSize = 18
+	collapseButton.AnchorPoint = Vector2.new(1, 0)
+	collapseButton.Position = BuildSettingsView.ToggleCollapsedPosition
+	collapseButton.Size = UDim2.fromOffset(26, 34)
 
 	local order = 0
 	local function nextOrder(): number
@@ -310,6 +322,7 @@ function BuildSettingsView.build(playerGui: PlayerGui): View
 		gui = gui,
 		uiScale = uiScale,
 		panel = panel,
+		collapseButton = collapseButton,
 		modeLabel = modeLabel,
 		gridLabel = gridLabel,
 		gridButtons = gridButtons,

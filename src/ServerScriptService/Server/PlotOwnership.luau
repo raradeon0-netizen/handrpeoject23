@@ -17,10 +17,26 @@ export type Claim = {
 local PlotOwnership = {}
 
 local claims: { [number]: Claim } = {} -- UserId -> участок
+local claimCallbacks: { (Claim) -> () } = {}
+local releaseCallbacks: { (Claim) -> () } = {}
+
+-- Подписка на выдачу участка (например, подгрузить сохранённые постройки).
+function PlotOwnership.onClaim(callback: (Claim) -> ())
+	table.insert(claimCallbacks, callback)
+end
+
+-- Подписка на освобождение участка: вызывается до его удаления (автосохранение).
+function PlotOwnership.onRelease(callback: (Claim) -> ())
+	table.insert(releaseCallbacks, callback)
+end
 
 -- Закрепляет участок за игроком.
 function PlotOwnership.claim(player: Player, plot: Part, factionId: string)
-	claims[player.UserId] = { player = player, plot = plot, factionId = factionId }
+	local claim: Claim = { player = player, plot = plot, factionId = factionId }
+	claims[player.UserId] = claim
+	for _, callback in claimCallbacks do
+		task.spawn(callback, claim)
+	end
 end
 
 -- Участок игрока или nil, если он ещё не выбрал фракцию.
@@ -31,6 +47,12 @@ end
 -- Снимает закрепление и возвращает снятую запись (nil, если её не было).
 function PlotOwnership.release(player: Player): Claim?
 	local claim = claims[player.UserId]
+	if claim then
+		-- Подписчики выполняются до первой паузы сразу: участок ещё цел, его можно прочитать.
+		for _, callback in releaseCallbacks do
+			task.spawn(callback, claim)
+		end
+	end
 	claims[player.UserId] = nil
 	return claim
 end

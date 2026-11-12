@@ -44,8 +44,8 @@ PaintMenuView.Tabs = {
 }
 
 -- Над нижней панелью, на месте каталога блоков (одновременно они не открываются).
-PaintMenuView.ShownPosition = UDim2.new(0.5, 0, 1, -136)
-PaintMenuView.HiddenPosition = UDim2.new(0.5, 0, 1, -116)
+PaintMenuView.ShownPosition = UDim2.new(0.5, 0, 1, -96)
+PaintMenuView.HiddenPosition = UDim2.new(0.5, 0, 1, -76)
 
 local function fitText(label: TextLabel, maxTextSize: number)
 	label.TextScaled = true

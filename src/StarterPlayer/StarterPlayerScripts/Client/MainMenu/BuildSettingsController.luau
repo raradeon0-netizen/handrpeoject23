@@ -155,6 +155,23 @@ local function nudgeAxis(axis: number, direction: number)
 end
 
 -- Создаёт панель при первом показе и подключает кнопки.
+local collapsed = false
+
+-- Раскрытая панель стоит у правого края; свёрнутая уезжает за него, остаётся кнопка «<».
+local function applyCollapse(v: BuildSettingsView.View)
+	v.collapseButton.Text = if collapsed then "<" else ">"
+	TweenService:Create(v.panel, Theme.TweenInfo, {
+		Position = if collapsed
+			then BuildSettingsView.PanelHiddenPosition
+			else BuildSettingsView.PanelShownPosition,
+	}):Play()
+	TweenService:Create(v.collapseButton, Theme.TweenInfo, {
+		Position = if collapsed
+			then BuildSettingsView.ToggleCollapsedPosition
+			else BuildSettingsView.ToggleShownPosition,
+	}):Play()
+end
+
 local function ensureView(): BuildSettingsView.View
 	local existing = view
 	if existing then
@@ -234,6 +251,11 @@ local function ensureView(): BuildSettingsView.View
 		resetRequested:Fire()
 	end)
 
+	created.collapseButton.Activated:Connect(function()
+		collapsed = not collapsed
+		applyCollapse(created)
+	end)
+
 	refresh()
 	return created
 end
@@ -307,7 +329,7 @@ function BuildSettingsController.show()
 	visible = true
 	v.panel.Position = BuildSettingsView.PanelHiddenPosition
 	v.gui.Enabled = true
-	TweenService:Create(v.panel, Theme.TweenInfo, { Position = BuildSettingsView.PanelShownPosition }):Play()
+	applyCollapse(v) -- панель появляется в том виде, в каком её оставили
 end
 
 -- Плавно убрать панель.

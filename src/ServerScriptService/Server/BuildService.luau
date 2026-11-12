@@ -22,6 +22,7 @@ local BlockCarver = require(script.Parent.BlockCarver)
 local BlockMover = require(script.Parent.BlockMover)
 local BlockPainter = require(script.Parent.BlockPainter)
 local TabletFactory = require(script.Parent.TabletFactory)
+local SaveManager = require(script.Parent.SaveManager)
 
 -- Шаг 1. RemoteEvent'ы для клиента.
 local function makeRemote(name: string): RemoteEvent
@@ -423,3 +424,6 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	lastAction[player] = nil
 	carving[player] = nil
 end)
+
+-- Облачное сохранение участка: кнопки верхней панели, автозагрузка и автосохранение.
+SaveManager.start()

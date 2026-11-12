@@ -55,6 +55,9 @@ function BlockFactory.create(
 	-- Метки: чей блок и какой формы (проверяются при удалении).
 	block:SetAttribute(BuildConfig.Attributes.OwnerUserId, owner.UserId)
 	block:SetAttribute(BuildConfig.Attributes.ShapeId, shapeId)
+	if shape.prefab and size then
+		block:SetAttribute(BuildConfig.Attributes.Size, size)
+	end
 	return block
 end
 

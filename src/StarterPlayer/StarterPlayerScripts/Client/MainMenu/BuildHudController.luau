@@ -25,6 +25,7 @@ local BlockCatalog = require(ReplicatedStorage.Shared.BlockCatalog)
 local BuildHudView = require(script.Parent.BuildHudView)
 local BlockPickerController = require(script.Parent.BlockPickerController)
 local PaintMenuController = require(script.Parent.PaintMenuController)
+local TopHudController = require(script.Parent.TopHudController)
 local ScaleSettings = require(script.Parent.ScaleSettings)
 local Theme = require(script.Parent.Theme)
 
@@ -54,6 +55,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	local view = BuildHudView.build(playerGui)
 	local picker = BlockPickerController.new(view.gui)
 	PaintMenuController.attach(view.gui)
+	TopHudController.attach(playerGui) -- верхняя панель: время суток и сохранение
 
 	local shapeId: string? = nil
 	local toolId: string? = nil
@@ -190,6 +192,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	-- Шаг 3. Появление и скрытие панели.
 	local function show()
 		visible = true
+		TopHudController.show()
 		view.panel.Position = BuildHudView.PanelHiddenPosition
 		view.gui.Enabled = true
 		TweenService:Create(view.panel, Theme.TweenInfo, { Position = BuildHudView.PanelShownPosition }):Play()
@@ -200,6 +203,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 		visible = false
 		picker.close()
 		PaintMenuController.close()
+		TopHudController.hide()
 		local tween = TweenService:Create(view.panel, Theme.TweenInfo, { Position = BuildHudView.PanelHiddenPosition })
 		tween.Completed:Once(function()
 			if not visible then

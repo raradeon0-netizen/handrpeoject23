@@ -34,8 +34,8 @@ local GAP = 8
 local BlockPickerView = {}
 
 -- Над нижней панелью: её высота (84 + отступы) + нижний отступ + зазор.
-BlockPickerView.ShownPosition = UDim2.new(0.5, 0, 1, -136)
-BlockPickerView.HiddenPosition = UDim2.new(0.5, 0, 1, -116)
+BlockPickerView.ShownPosition = UDim2.new(0.5, 0, 1, -96)
+BlockPickerView.HiddenPosition = UDim2.new(0.5, 0, 1, -76)
 
 local function fitText(label: TextLabel, maxTextSize: number)
 	label.TextScaled = true
