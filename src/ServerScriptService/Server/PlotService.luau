@@ -59,8 +59,13 @@ end
 local function assignPlot(player: Player, faction: FactionConfig.Faction): boolean
 	-- Участок уже есть (повторный запрос): новый не строим, просто возвращаем на него.
 	local existing = PlotOwnership.getClaim(player)
-	if existing then
+	if existing and existing.factionId == faction.id then
 		return placeOnPlot(player, existing.plot)
+	end
+	if existing then
+		-- Игрок вернулся в главное меню и выбрал другую фракцию: прежний участок
+		-- освобождается (с автосохранением), постройки подгрузятся на новый.
+		releasePlayer(player)
 	end
 
 	-- Слот в сетке -> центр участка -> Part нужного стиля.

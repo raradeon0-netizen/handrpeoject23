@@ -4,8 +4,11 @@
 -- плюс "Settings" (открывается с титульного экрана).
 
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local MenuView = require(script.Parent.MenuView)
+local AudioController = require(script.Parent.AudioController)
+local TopHudController = require(script.Parent.TopHudController)
 local BuildCameraController = require(script.Parent.BuildCameraController)
 local BuildHudController = require(script.Parent.BuildHudController)
 local BuildController = require(script.Parent.BuildController)
@@ -13,7 +16,13 @@ local Teleporter = require(script.Parent.Teleporter)
 local ScaleSettings = require(script.Parent.ScaleSettings)
 local Theme = require(script.Parent.Theme)
 
-type State = "Title" | "FactionSelect" | "Settings" | "Closed"
+type State = "Title" | "FactionSelect" | "Settings" | "Pause" | "Closed"
+
+-- Клавиши меню паузы (Escape зарезервирован за меню Roblox).
+local PAUSE_KEYS: { [Enum.KeyCode]: boolean } = {
+	[Enum.KeyCode.Tab] = true,
+	[Enum.KeyCode.P] = true,
+}
 
 local MenuController = {}
 
@@ -21,9 +30,16 @@ function MenuController.start(playerGui: PlayerGui)
 	local view = MenuView.build(playerGui)
 	local buildHud = BuildHudController.start(playerGui) -- строительная панель (скрыта до выбора фракции)
 	local busy = false -- защита от двойного клика во время телепорта
+	local inGame = false -- игрок на участке: работает меню паузы
+	local currentState: State = "Title"
+	local settingsReturn: State = "Title" -- куда вернуться из окна настроек
 
 	-- Показывает только нужный экран.
 	local function setState(state: State)
+		currentState = state
+		view.pauseScreen.Visible = state == "Pause"
+		-- Пока открыто любое окно меню, редактор не реагирует на клавиши и клики.
+		BuildController.setPaused(state ~= "Closed")
 		view.titleScreen.Visible = state == "Title"
 		view.factionScreen.Visible = state == "FactionSelect"
 		view.settingsScreen.Visible = state == "Settings"
@@ -56,10 +72,11 @@ function MenuController.start(playerGui: PlayerGui)
 
 	-- «Настройки» и «Закрыть»: открыть окно и вернуться в главное меню.
 	view.settingsButton.Activated:Connect(function()
+		settingsReturn = "Title"
 		setState("Settings")
 	end)
 	view.closeSettingsButton.Activated:Connect(function()
-		setState("Title")
+		setState(settingsReturn)
 	end)
 
 	-- Кнопки размера интерфейса.
@@ -93,6 +110,7 @@ function MenuController.start(playerGui: PlayerGui)
 				-- Участок готов: включаем строительную камеру, вместе с ней появляется панель.
 				if BuildCameraController.enter() then
 					buildHud.show()
+					inGame = true
 					-- Строительный редактор: призрак, установка, резак и удаление блоков.
 					local plot = BuildCameraController.getPlot()
 					if plot then
@@ -105,6 +123,69 @@ function MenuController.start(playerGui: PlayerGui)
 			busy = false
 		end)
 	end
+
+	-- ===== Громкость музыки (окно «Настройки») =====
+	local function refreshVolume()
+		local level = AudioController.getVolume()
+		local muted = AudioController.isMuted()
+		view.volumeLabel.Text = if muted
+			then "Громкость музыки: без звука"
+			else string.format("Громкость музыки: %d%%", math.round(level * 100))
+		view.muteButton.Text = if muted then "Включить" else "Без звука"
+		TweenService:Create(view.volumeFill, Theme.TweenInfo, { Size = UDim2.fromScale(if muted then 0 else level, 1) })
+			:Play()
+	end
+
+	view.volumeMinus.Activated:Connect(function()
+		AudioController.setVolume(AudioController.getVolume() - AudioController.VolumeStep)
+	end)
+	view.volumePlus.Activated:Connect(function()
+		AudioController.setVolume(AudioController.getVolume() + AudioController.VolumeStep)
+	end)
+	view.muteButton.Activated:Connect(function()
+		AudioController.setMuted(not AudioController.isMuted())
+	end)
+	AudioController.Changed:Connect(refreshVolume)
+	refreshVolume()
+
+	-- ===== Меню паузы =====
+	-- Escape занят меню Roblox, поэтому пауза — кнопка «Меню» в углу и клавиши из PAUSE_KEYS.
+	local function togglePause()
+		if not inGame or busy then
+			return
+		end
+		if currentState == "Closed" then
+			setState("Pause")
+		elseif currentState == "Pause" then
+			setState("Closed")
+		end
+	end
+
+	TopHudController.PauseRequested:Connect(togglePause)
+	UserInputService.InputBegan:Connect(function(input: InputObject)
+		if PAUSE_KEYS[input.KeyCode] and not UserInputService:GetFocusedTextBox() then
+			togglePause()
+		end
+	end)
+
+	view.resumeButton.Activated:Connect(function()
+		setState("Closed")
+	end)
+
+	view.pauseSettingsButton.Activated:Connect(function()
+		settingsReturn = "Pause" -- «Закрыть» в настройках вернёт сюда
+		setState("Settings")
+	end)
+
+	-- Выход в главное меню: выключаем редактор и камеру, прячем панели. Участок остаётся
+	-- за игроком: можно вернуться в ту же фракцию или выбрать другую.
+	view.exitButton.Activated:Connect(function()
+		inGame = false
+		BuildController.stop()
+		BuildCameraController.stop()
+		buildHud.hide()
+		setState("Title")
+	end)
 
 	applyScale(Theme.DefaultScaleId, true)
 	setState("Title")

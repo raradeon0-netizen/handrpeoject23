@@ -15,6 +15,7 @@ export type View = {
 	saveButton: TextButton,
 	loadButton: TextButton,
 	statusLabel: TextLabel,
+	pauseButton: TextButton, -- «Меню» в левом верхнем углу
 }
 
 local BUTTON_HEIGHT = 28
@@ -115,6 +116,12 @@ function TopHudView.build(playerGui: PlayerGui): View
 	statusPadding.PaddingRight = UDim.new(0, 10)
 	statusPadding.Parent = statusLabel
 
+	-- Кнопка меню паузы: левый верхний угол, под значками верхней панели Roblox.
+	local pauseButton = UIFactory.button("Pause", "Меню", Theme.SecondaryButtonColor, gui)
+	pauseButton.TextSize = 17
+	pauseButton.Position = UDim2.fromOffset(12, 62)
+	pauseButton.Size = UDim2.fromOffset(84, 30)
+
 	gui.Parent = playerGui
 
 	return {
@@ -125,6 +132,7 @@ function TopHudView.build(playerGui: PlayerGui): View
 		saveButton = saveButton,
 		loadButton = loadButton,
 		statusLabel = statusLabel,
+		pauseButton = pauseButton,
 	}
 end
 

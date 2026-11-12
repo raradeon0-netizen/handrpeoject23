@@ -28,6 +28,11 @@ local STATUS_COLORS: { [string]: Color3 } = {
 
 local TopHudController = {}
 
+local pauseRequested = Instance.new("BindableEvent")
+
+-- Нажата кнопка «Меню»: меню паузы открывает MenuController.
+TopHudController.PauseRequested = pauseRequested.Event
+
 local view: TopHudView.View? = nil
 local visible = false
 local statusToken = 0
@@ -146,6 +151,10 @@ function TopHudController.attach(playerGui: PlayerGui)
 		confirmToken += 1
 		resetConfirm()
 		request("Load", "Загрузка…")
+	end)
+
+	created.pauseButton.Activated:Connect(function()
+		pauseRequested:Fire()
 	end)
 
 	TimeOfDayController.set(TimeOfDayController.DefaultId, true)

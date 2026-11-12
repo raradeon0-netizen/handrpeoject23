@@ -2638,8 +2638,13 @@ end
 local function assignPlot(player: Player, faction: FactionConfig.Faction): boolean
 	-- Участок уже есть (повторный запрос): новый не строим, просто возвращаем на него.
 	local existing = PlotOwnership.getClaim(player)
-	if existing then
+	if existing and existing.factionId == faction.id then
 		return placeOnPlot(player, existing.plot)
+	end
+	if existing then
+		-- Игрок вернулся в главное меню и выбрал другую фракцию: прежний участок
+		-- освобождается (с автосохранением), постройки подгрузятся на новый.
+		releasePlayer(player)
 	end
 
 	-- Слот в сетке -> центр участка -> Part нужного стиля.
@@ -4568,6 +4573,11 @@ local busy: { [number]: boolean } = {} -- UserId -> идёт сохранени�
 local lastSave: { [number]: number } = {}
 local pendingWrites = 0
 
+-- Снимок только что освобождённого участка. При смене фракции новый участок выдаётся сразу,
+-- пока запись ещё идёт в хранилище, — постройки берём отсюда, а не читаем устаревшие данные.
+local handoff: { [number]: PlotSerializer.SaveData } = {}
+local HANDOFF_LIFETIME = 30
+
 local function send(player: Player, kind: StatusKind, text: string)
 	if remote and player.Parent then
 		remote:FireClient(player, kind, text)
@@ -4693,7 +4703,11 @@ local function load(player: Player, claim: PlotOwnership.Claim, replace: boolean
 		return PlotOwnership.getClaim(player) == claim and claim.plot.Parent ~= nil
 	end
 
-	local ok, data = read(userId)
+	local ok: boolean, data: any = true, handoff[userId]
+	handoff[userId] = nil
+	if data == nil then
+		ok, data = read(userId)
+	end
 	if not stillValid() then
 		busy[userId] = nil
 		return
@@ -4733,6 +4747,12 @@ local function autoSave(claim: PlotOwnership.Claim)
 	lastSave[userId] = nil
 	if allowed then
 		local data = snapshot(claim)
+		handoff[userId] = data
+		task.delay(HANDOFF_LIFETIME, function()
+			if handoff[userId] == data then
+				handoff[userId] = nil
+			end
+		end)
 		task.spawn(write, userId, data)
 	end
 end
@@ -4807,11 +4827,13 @@ local Players = game:GetService("Players")
 
 local MenuController = require(script.MenuController)
 local LightFlicker = require(script.LightFlicker)
+local AudioController = require(script.AudioController)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 
 LightFlicker.start() -- мерцание огня светильников
+AudioController.start() -- фоновая музыка: и в меню, и в игре
 MenuController.start(playerGui)
 ]]></string>
           </Properties>
@@ -5180,8 +5202,11 @@ return BlockPickerController
 -- плюс "Settings" (открывается с титульного экрана).
 
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local MenuView = require(script.Parent.MenuView)
+local AudioController = require(script.Parent.AudioController)
+local TopHudController = require(script.Parent.TopHudController)
 local BuildCameraController = require(script.Parent.BuildCameraController)
 local BuildHudController = require(script.Parent.BuildHudController)
 local BuildController = require(script.Parent.BuildController)
@@ -5189,7 +5214,13 @@ local Teleporter = require(script.Parent.Teleporter)
 local ScaleSettings = require(script.Parent.ScaleSettings)
 local Theme = require(script.Parent.Theme)
 
-type State = "Title" | "FactionSelect" | "Settings" | "Closed"
+type State = "Title" | "FactionSelect" | "Settings" | "Pause" | "Closed"
+
+-- Клавиши меню паузы (Escape зарезервирован за меню Roblox).
+local PAUSE_KEYS: { [Enum.KeyCode]: boolean } = {
+	[Enum.KeyCode.Tab] = true,
+	[Enum.KeyCode.P] = true,
+}
 
 local MenuController = {}
 
@@ -5197,9 +5228,16 @@ function MenuController.start(playerGui: PlayerGui)
 	local view = MenuView.build(playerGui)
 	local buildHud = BuildHudController.start(playerGui) -- строительная панель (скрыта до выбора фракции)
 	local busy = false -- защита от двойного клика во время телепорта
+	local inGame = false -- игрок на участке: работает меню паузы
+	local currentState: State = "Title"
+	local settingsReturn: State = "Title" -- куда вернуться из окна настроек
 
 	-- Показывает только нужный экран.
 	local function setState(state: State)
+		currentState = state
+		view.pauseScreen.Visible = state == "Pause"
+		-- Пока открыто любое окно меню, редактор не реагирует на клавиши и клики.
+		BuildController.setPaused(state ~= "Closed")
 		view.titleScreen.Visible = state == "Title"
 		view.factionScreen.Visible = state == "FactionSelect"
 		view.settingsScreen.Visible = state == "Settings"
@@ -5232,10 +5270,11 @@ function MenuController.start(playerGui: PlayerGui)
 
 	-- «Настройки» и «Закрыть»: открыть окно и вернуться в главное меню.
 	view.settingsButton.Activated:Connect(function()
+		settingsReturn = "Title"
 		setState("Settings")
 	end)
 	view.closeSettingsButton.Activated:Connect(function()
-		setState("Title")
+		setState(settingsReturn)
 	end)
 
 	-- Кнопки размера интерфейса.
@@ -5269,6 +5308,7 @@ function MenuController.start(playerGui: PlayerGui)
 				-- Участок готов: включаем строительную камеру, вместе с ней появляется панель.
 				if BuildCameraController.enter() then
 					buildHud.show()
+					inGame = true
 					-- Строительный редактор: призрак, установка, резак и удаление блоков.
 					local plot = BuildCameraController.getPlot()
 					if plot then
@@ -5281,6 +5321,69 @@ function MenuController.start(playerGui: PlayerGui)
 			busy = false
 		end)
 	end
+
+	-- ===== Громкость музыки (окно «Настройки») =====
+	local function refreshVolume()
+		local level = AudioController.getVolume()
+		local muted = AudioController.isMuted()
+		view.volumeLabel.Text = if muted
+			then "Громкость музыки: без звука"
+			else string.format("Громкость музыки: %d%%", math.round(level * 100))
+		view.muteButton.Text = if muted then "Включить" else "Без звука"
+		TweenService:Create(view.volumeFill, Theme.TweenInfo, { Size = UDim2.fromScale(if muted then 0 else level, 1) })
+			:Play()
+	end
+
+	view.volumeMinus.Activated:Connect(function()
+		AudioController.setVolume(AudioController.getVolume() - AudioController.VolumeStep)
+	end)
+	view.volumePlus.Activated:Connect(function()
+		AudioController.setVolume(AudioController.getVolume() + AudioController.VolumeStep)
+	end)
+	view.muteButton.Activated:Connect(function()
+		AudioController.setMuted(not AudioController.isMuted())
+	end)
+	AudioController.Changed:Connect(refreshVolume)
+	refreshVolume()
+
+	-- ===== Меню паузы =====
+	-- Escape занят меню Roblox, поэтому пауза — кнопка «Меню» в углу и клавиши из PAUSE_KEYS.
+	local function togglePause()
+		if not inGame or busy then
+			return
+		end
+		if currentState == "Closed" then
+			setState("Pause")
+		elseif currentState == "Pause" then
+			setState("Closed")
+		end
+	end
+
+	TopHudController.PauseRequested:Connect(togglePause)
+	UserInputService.InputBegan:Connect(function(input: InputObject)
+		if PAUSE_KEYS[input.KeyCode] and not UserInputService:GetFocusedTextBox() then
+			togglePause()
+		end
+	end)
+
+	view.resumeButton.Activated:Connect(function()
+		setState("Closed")
+	end)
+
+	view.pauseSettingsButton.Activated:Connect(function()
+		settingsReturn = "Pause" -- «Закрыть» в настройках вернёт сюда
+		setState("Settings")
+	end)
+
+	-- Выход в главное меню: выключаем редактор и камеру, прячем панели. Участок остаётся
+	-- за игроком: можно вернуться в ту же фракцию или выбрать другую.
+	view.exitButton.Activated:Connect(function()
+		inGame = false
+		BuildController.stop()
+		BuildCameraController.stop()
+		buildHud.hide()
+		setState("Title")
+	end)
 
 	applyScale(Theme.DefaultScaleId, true)
 	setState("Title")
@@ -5315,6 +5418,15 @@ export type View = {
 	closeSettingsButton: TextButton,
 	factionButtons: { [string]: TextButton }, -- id фракции -> кнопка
 	scaleButtons: { [string]: TextButton }, -- id варианта размера -> кнопка
+	volumeLabel: TextLabel, -- «Громкость музыки: 40%»
+	volumeMinus: TextButton,
+	volumePlus: TextButton,
+	volumeFill: Frame, -- заполнение шкалы громкости
+	muteButton: TextButton,
+	pauseScreen: Frame, -- меню паузы (во время игры)
+	resumeButton: TextButton,
+	pauseSettingsButton: TextButton,
+	exitButton: TextButton,
 }
 
 local MenuView = {}
@@ -5394,7 +5506,8 @@ function MenuView.build(playerGui: PlayerGui): View
 
 	-- Шаг 4. Окно настроек: выбор размера интерфейса и кнопка «Закрыть».
 	local settingsScreen = UIFactory.screen("SettingsScreen", gui)
-	local settingsPanel = UIFactory.panel("Panel", UDim2.fromOffset(480, 300), settingsScreen)
+	settingsScreen.Active = true -- открытое из паузы окно не пропускает клики в мир
+	local settingsPanel = UIFactory.panel("Panel", UDim2.fromOffset(480, 410), settingsScreen)
 	UIFactory.verticalList(settingsPanel, 16)
 
 	local settingsTitle = UIFactory.label("Title", "Настройки", 36, settingsPanel)
@@ -5431,12 +5544,100 @@ function MenuView.build(playerGui: PlayerGui): View
 		scaleButtons[option.id] = button
 	end
 
+	-- Громкость музыки: «−», шкала, «+» и переключатель «без звука».
+	local volumeLabel = UIFactory.label("VolumeLabel", "Громкость музыки", 22, settingsPanel)
+	volumeLabel.Font = Theme.BodyFont
+	volumeLabel.TextColor3 = Theme.SubTextColor
+	volumeLabel.LayoutOrder = 4
+
+	local volumeRow = Instance.new("Frame")
+	volumeRow.Name = "VolumeRow"
+	volumeRow.BackgroundTransparency = 1
+	volumeRow.Size = UDim2.new(1, 0, 0, 40)
+	volumeRow.LayoutOrder = 5
+	volumeRow.Parent = settingsPanel
+
+	local volumeLayout = Instance.new("UIListLayout")
+	volumeLayout.FillDirection = Enum.FillDirection.Horizontal
+	volumeLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	volumeLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	volumeLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	volumeLayout.Padding = UDim.new(0, 8)
+	volumeLayout.Parent = volumeRow
+
+	local volumeMinus = UIFactory.button("VolumeMinus", "−", Theme.SecondaryButtonColor, volumeRow)
+	volumeMinus.Size = UDim2.fromOffset(44, 40)
+	volumeMinus.TextSize = 26
+	volumeMinus.LayoutOrder = 1
+
+	local volumeBar = Instance.new("Frame")
+	volumeBar.Name = "VolumeBar"
+	volumeBar.Size = UDim2.fromOffset(190, 14)
+	volumeBar.BackgroundColor3 = Theme.BackgroundColor
+	volumeBar.BorderSizePixel = 0
+	volumeBar.LayoutOrder = 2
+	volumeBar.Parent = volumeRow
+
+	local barCorner = Instance.new("UICorner")
+	barCorner.CornerRadius = UDim.new(1, 0)
+	barCorner.Parent = volumeBar
+
+	local barStroke = Instance.new("UIStroke")
+	barStroke.Color = Theme.PanelStroke
+	barStroke.Thickness = 1
+	barStroke.Transparency = Theme.StrokeTransparency
+	barStroke.Parent = volumeBar
+
+	local volumeFill = Instance.new("Frame")
+	volumeFill.Name = "Fill"
+	volumeFill.Size = UDim2.fromScale(0, 1)
+	volumeFill.BackgroundColor3 = Theme.PanelStroke
+	volumeFill.BorderSizePixel = 0
+	volumeFill.Parent = volumeBar
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = volumeFill
+
+	local volumePlus = UIFactory.button("VolumePlus", "+", Theme.SecondaryButtonColor, volumeRow)
+	volumePlus.Size = UDim2.fromOffset(44, 40)
+	volumePlus.TextSize = 26
+	volumePlus.LayoutOrder = 3
+
+	local muteButton = UIFactory.button("MuteButton", "", Theme.SecondaryButtonColor, volumeRow)
+	muteButton.Size = UDim2.fromOffset(120, 40)
+	muteButton.TextSize = 18
+	muteButton.LayoutOrder = 4
+
 	local closeSettingsButton = UIFactory.button("CloseButton", "Закрыть", Theme.PrimaryButtonColor, settingsPanel)
 	closeSettingsButton.Size = UDim2.new(0.5, 0, 0, 44)
 	closeSettingsButton.TextSize = 22
-	closeSettingsButton.LayoutOrder = 4
+	closeSettingsButton.LayoutOrder = 6
 
 	-- Шаг 5. Добавляем GUI в PlayerGui последним, когда иерархия уже собрана.
+	-- Меню паузы (во время игры): продолжить, настройки, выход в главное меню.
+	local pauseScreen = UIFactory.screen("PauseScreen", gui)
+	pauseScreen.Active = true -- клики по затемнению не уходят в мир (не ставят блоки)
+	local pausePanel = UIFactory.panel("Panel", UDim2.fromOffset(400, 300), pauseScreen)
+	UIFactory.verticalList(pausePanel, 16)
+
+	local pauseTitle = UIFactory.label("Title", "Меню паузы", 36, pausePanel)
+	pauseTitle.LayoutOrder = 1
+
+	local resumeButton = UIFactory.button("ResumeButton", "Продолжить", Theme.PrimaryButtonColor, pausePanel)
+	resumeButton.Size = UDim2.new(0.8, 0, 0, 56)
+	resumeButton.LayoutOrder = 2
+
+	local pauseSettingsButton = UIFactory.button("SettingsButton", "Настройки", Theme.SecondaryButtonColor, pausePanel)
+	pauseSettingsButton.Size = UDim2.new(0.8, 0, 0, 48)
+	pauseSettingsButton.TextSize = 24
+	pauseSettingsButton.LayoutOrder = 3
+
+	local exitButton = UIFactory.button("ExitButton", "Выйти в главное меню", Theme.SecondaryButtonColor, pausePanel)
+	exitButton.Size = UDim2.new(0.8, 0, 0, 48)
+	exitButton.TextSize = 22
+	exitButton.LayoutOrder = 4
+
 	gui.Parent = playerGui
 
 	return {
@@ -5451,6 +5652,15 @@ function MenuView.build(playerGui: PlayerGui): View
 		closeSettingsButton = closeSettingsButton,
 		factionButtons = factionButtons,
 		scaleButtons = scaleButtons,
+		volumeLabel = volumeLabel,
+		volumeMinus = volumeMinus,
+		volumePlus = volumePlus,
+		volumeFill = volumeFill,
+		muteButton = muteButton,
+		pauseScreen = pauseScreen,
+		resumeButton = resumeButton,
+		pauseSettingsButton = pauseSettingsButton,
+		exitButton = exitButton,
 	}
 end
 
@@ -6574,6 +6784,9 @@ local session: Session? = nil
 -- Поворот призрака в градусах; запоминается между сессиями строительства.
 local angles: BuildGrid.Angles = { yaw = 0, pitch = 0, roll = 0 }
 
+-- Открыто меню (пауза, настройки): редактор не строит и не реагирует на клавиши.
+local paused = false
+
 -- ===== Луч из курсора =====
 
 -- Куда смотрит курсор: только своя плита или блоки на ней (декор и призрак исключены).
@@ -6852,7 +7065,7 @@ end
 
 local function step(dt: number)
 	local s = session
-	if not s then
+	if not s or paused then
 		return
 	end
 
@@ -6921,6 +7134,17 @@ local function step(dt: number)
 end
 
 -- ===== Публичный API =====
+
+function BuildController.setPaused(value: boolean)
+	paused = value
+	local s = session
+	if value and s then
+		s.ghost.hide()
+		s.highlight.Adornee = nil
+		s.highlight.Enabled = false
+		s.hovered = nil
+	end
+end
 
 function BuildController.isActive(): boolean
 	return session ~= nil
@@ -7095,7 +7319,7 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	table.insert(
 		s.connections,
 		UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
-			if processed or UserInputService:GetFocusedTextBox() then
+			if processed or paused or UserInputService:GetFocusedTextBox() then
 				return
 			end
 
@@ -8934,6 +9158,11 @@ local STATUS_COLORS: { [string]: Color3 } = {
 
 local TopHudController = {}
 
+local pauseRequested = Instance.new("BindableEvent")
+
+-- Нажата кнопка «Меню»: меню паузы открывает MenuController.
+TopHudController.PauseRequested = pauseRequested.Event
+
 local view: TopHudView.View? = nil
 local visible = false
 local statusToken = 0
@@ -9054,6 +9283,10 @@ function TopHudController.attach(playerGui: PlayerGui)
 		request("Load", "Загрузка…")
 	end)
 
+	created.pauseButton.Activated:Connect(function()
+		pauseRequested:Fire()
+	end)
+
 	TimeOfDayController.set(TimeOfDayController.DefaultId, true)
 	refreshTime()
 end
@@ -9104,6 +9337,7 @@ export type View = {
 	saveButton: TextButton,
 	loadButton: TextButton,
 	statusLabel: TextLabel,
+	pauseButton: TextButton, -- «Меню» в левом верхнем углу
 }
 
 local BUTTON_HEIGHT = 28
@@ -9204,6 +9438,12 @@ function TopHudView.build(playerGui: PlayerGui): View
 	statusPadding.PaddingRight = UDim.new(0, 10)
 	statusPadding.Parent = statusLabel
 
+	-- Кнопка меню паузы: левый верхний угол, под значками верхней панели Roblox.
+	local pauseButton = UIFactory.button("Pause", "Меню", Theme.SecondaryButtonColor, gui)
+	pauseButton.TextSize = 17
+	pauseButton.Position = UDim2.fromOffset(12, 62)
+	pauseButton.Size = UDim2.fromOffset(84, 30)
+
 	gui.Parent = playerGui
 
 	return {
@@ -9214,10 +9454,94 @@ function TopHudView.build(playerGui: PlayerGui): View
 		saveButton = saveButton,
 		loadButton = loadButton,
 		statusLabel = statusLabel,
+		pauseButton = pauseButton,
 	}
 end
 
 return TopHudView
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD61"><Properties><string name="Name">AudioController</string><string name="Source"><![CDATA[--!strict
+-- AudioController (клиент): спокойная фоновая музыка в главном меню и во время игры.
+--
+-- ┌─ СВОЯ МУЗЫКА ───────────────────────────────────────────────────────────────────────┐
+-- │ Чтобы заменить трек, вставьте его id в MUSIC_ASSET_ID ниже в виде                    │
+-- │ "rbxassetid://123456789". Трек должен быть доступен вашему месту: свой загруженный    │
+-- │ звук или звук из библиотеки Roblox (Creator Store → Audio).                           │
+-- └───────────────────────────────────────────────────────────────────────────────────────┘
+--
+-- По умолчанию играет «Ancient Paths» (Matthew Cang, альбом The Ambient Works) из официальной
+-- библиотеки Roblox — лицензионная музыка APM Music, бесплатная для всех мест.
+-- Громкость и «без звука» меняются в окне «Настройки» (MenuController).
+
+local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
+
+local MUSIC_ASSET_ID = "rbxassetid://1840833726"
+
+local DEFAULT_VOLUME = 0.4 -- 0..1, как на шкале в настройках
+local VOLUME_STEP = 0.1
+local FADE = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local FADE_IN = TweenInfo.new(2.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+local AudioController = {}
+
+AudioController.VolumeStep = VOLUME_STEP
+
+local changed = Instance.new("BindableEvent")
+
+-- Срабатывает при смене громкости или режима «без звука».
+AudioController.Changed = changed.Event
+
+local sound: Sound? = nil
+local volume = DEFAULT_VOLUME
+local muted = false
+
+local function apply(info: TweenInfo)
+	local music = sound
+	if music then
+		TweenService:Create(music, info, { Volume = if muted then 0 else volume }):Play()
+	end
+end
+
+-- Создаёт звук и запускает музыку (один раз). Громкость плавно нарастает с нуля.
+function AudioController.start()
+	if sound then
+		return
+	end
+	local music = Instance.new("Sound")
+	music.Name = "BackgroundMusic"
+	music.SoundId = MUSIC_ASSET_ID
+	music.Looped = true
+	music.Volume = 0
+	music.Parent = SoundService
+	sound = music
+	music:Play()
+	apply(FADE_IN)
+end
+
+function AudioController.getVolume(): number
+	return volume
+end
+
+function AudioController.isMuted(): boolean
+	return muted
+end
+
+-- level — 0..1. Любая смена громкости снимает режим «без звука».
+function AudioController.setVolume(level: number)
+	volume = math.clamp(math.round(level * 100) / 100, 0, 1)
+	muted = false
+	apply(FADE)
+	changed:Fire()
+end
+
+function AudioController.setMuted(value: boolean)
+	muted = value
+	apply(FADE)
+	changed:Fire()
+end
+
+return AudioController
 ]]></string></Properties></Item>
 </Item>
       </Item>

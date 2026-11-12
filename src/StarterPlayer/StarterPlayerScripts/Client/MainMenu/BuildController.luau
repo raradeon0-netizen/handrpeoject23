@@ -86,6 +86,9 @@ local session: Session? = nil
 -- Поворот призрака в градусах; запоминается между сессиями строительства.
 local angles: BuildGrid.Angles = { yaw = 0, pitch = 0, roll = 0 }
 
+-- Открыто меню (пауза, настройки): редактор не строит и не реагирует на клавиши.
+local paused = false
+
 -- ===== Луч из курсора =====
 
 -- Куда смотрит курсор: только своя плита или блоки на ней (декор и призрак исключены).
@@ -364,7 +367,7 @@ end
 
 local function step(dt: number)
 	local s = session
-	if not s then
+	if not s or paused then
 		return
 	end
 
@@ -433,6 +436,17 @@ local function step(dt: number)
 end
 
 -- ===== Публичный API =====
+
+function BuildController.setPaused(value: boolean)
+	paused = value
+	local s = session
+	if value and s then
+		s.ghost.hide()
+		s.highlight.Adornee = nil
+		s.highlight.Enabled = false
+		s.hovered = nil
+	end
+end
 
 function BuildController.isActive(): boolean
 	return session ~= nil
@@ -607,7 +621,7 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	table.insert(
 		s.connections,
 		UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
-			if processed or UserInputService:GetFocusedTextBox() then
+			if processed or paused or UserInputService:GetFocusedTextBox() then
 				return
 			end
 

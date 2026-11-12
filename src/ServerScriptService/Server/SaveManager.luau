@@ -31,6 +31,11 @@ local busy: { [number]: boolean } = {} -- UserId -> идёт сохранени�
 local lastSave: { [number]: number } = {}
 local pendingWrites = 0
 
+-- Снимок только что освобождённого участка. При смене фракции новый участок выдаётся сразу,
+-- пока запись ещё идёт в хранилище, — постройки берём отсюда, а не читаем устаревшие данные.
+local handoff: { [number]: PlotSerializer.SaveData } = {}
+local HANDOFF_LIFETIME = 30
+
 local function send(player: Player, kind: StatusKind, text: string)
 	if remote and player.Parent then
 		remote:FireClient(player, kind, text)
@@ -156,7 +161,11 @@ local function load(player: Player, claim: PlotOwnership.Claim, replace: boolean
 		return PlotOwnership.getClaim(player) == claim and claim.plot.Parent ~= nil
 	end
 
-	local ok, data = read(userId)
+	local ok: boolean, data: any = true, handoff[userId]
+	handoff[userId] = nil
+	if data == nil then
+		ok, data = read(userId)
+	end
 	if not stillValid() then
 		busy[userId] = nil
 		return
@@ -196,6 +205,12 @@ local function autoSave(claim: PlotOwnership.Claim)
 	lastSave[userId] = nil
 	if allowed then
 		local data = snapshot(claim)
+		handoff[userId] = data
+		task.delay(HANDOFF_LIFETIME, function()
+			if handoff[userId] == data then
+				handoff[userId] = nil
+			end
+		end)
 		task.spawn(write, userId, data)
 	end
 end
