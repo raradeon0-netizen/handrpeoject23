@@ -11039,7 +11039,6 @@ return WalkController
 --   * лёгкое покачивание камеры в такт шагам (Humanoid.CameraOffset — работает и от третьего,
 --     и от первого лица, не мешая стандартной камере и приближению колесом мыши).
 
-local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
@@ -11059,7 +11058,6 @@ local WalkMotion = {}
 
 local humanoid: Humanoid? = nil
 local phase = 0
-local savedMouseLock: boolean? = nil
 
 local function step(dt: number)
 	local h = humanoid
@@ -11101,10 +11099,6 @@ function WalkMotion.stop()
 	if camera then
 		camera.FieldOfView = WALK_FOV
 	end
-	if savedMouseLock ~= nil then
-		Players.LocalPlayer.DevEnableMouseLock = savedMouseLock
-		savedMouseLock = nil
-	end
 end
 
 -- Включает бег и покачивание для персонажа (вход в режим прогулки и респавн).
@@ -11112,9 +11106,6 @@ function WalkMotion.start(target: Humanoid)
 	WalkMotion.stop()
 	humanoid = target
 	phase = 0
-	-- LeftShift по умолчанию переключает Shift Lock — на время прогулки он занят бегом.
-	savedMouseLock = Players.LocalPlayer.DevEnableMouseLock
-	Players.LocalPlayer.DevEnableMouseLock = false
 	-- До стандартной камеры: она учитывает CameraOffset в этом же кадре.
 	RunService:BindToRenderStep(BIND_NAME, Enum.RenderPriority.Camera.Value - 1, step)
 end
