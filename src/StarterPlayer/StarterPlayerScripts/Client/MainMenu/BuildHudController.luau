@@ -24,6 +24,7 @@ local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BlockCatalog = require(ReplicatedStorage.Shared.BlockCatalog)
 local BuildHudView = require(script.Parent.BuildHudView)
 local BlockPickerController = require(script.Parent.BlockPickerController)
+local PaintMenuController = require(script.Parent.PaintMenuController)
 local ScaleSettings = require(script.Parent.ScaleSettings)
 local Theme = require(script.Parent.Theme)
 
@@ -52,6 +53,7 @@ end
 function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	local view = BuildHudView.build(playerGui)
 	local picker = BlockPickerController.new(view.gui)
+	PaintMenuController.attach(view.gui)
 
 	local shapeId: string? = nil
 	local toolId: string? = nil
@@ -110,6 +112,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	end
 
 	local function toggleCatalog()
+		PaintMenuController.close() -- каталог и меню покраски занимают одно место
 		picker.toggle()
 		refresh()
 	end
@@ -131,12 +134,21 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 			shapeId = pickedId
 		end
 		picker.close()
+		PaintMenuController.close()
 		fire()
 	end)
 
 	local function onSlotClicked(slot: BuildSlots.Slot)
 		if slot.kind == "Catalog" then
 			toggleCatalog()
+			return
+		end
+		local isPaint = slot.id == BuildConfig.PaintSlotId
+		if isPaint and toolId == slot.id and not PaintMenuController.isOpen() then
+			-- Инструмент уже включён, меню закрыто после выбора кисти: открываем его снова.
+			picker.close()
+			PaintMenuController.open()
+			refresh()
 			return
 		end
 		if toolId == slot.id then
@@ -146,6 +158,12 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 			if SHAPE_TOOLS[slot.id] and (shapeId == nil or isPrefab(shapeId)) then
 				shapeId = DEFAULT_CARVE_SHAPE -- резаку нужна базовая форма: по умолчанию «Блок»
 			end
+		end
+		if isPaint and toolId == slot.id then
+			picker.close()
+			PaintMenuController.open()
+		else
+			PaintMenuController.close()
 		end
 		fire()
 	end
@@ -181,6 +199,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	local function hide()
 		visible = false
 		picker.close()
+		PaintMenuController.close()
 		local tween = TweenService:Create(view.panel, Theme.TweenInfo, { Position = BuildHudView.PanelHiddenPosition })
 		tween.Completed:Once(function()
 			if not visible then
@@ -201,6 +220,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 		SelectionChanged = selectionChanged.Event,
 		setFaction = function(factionId: string?)
 			picker.setFaction(factionId)
+			PaintMenuController.setFaction(factionId)
 		end,
 	}
 end

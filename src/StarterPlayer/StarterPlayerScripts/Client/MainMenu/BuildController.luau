@@ -11,6 +11,8 @@
 --   * «Двигать»: ЛКМ по своему блоку показывает 3D-стрелки X / Y / Z (MoveGizmo), перенос идёт по шагу сетки;
 --   * размер базовых блоков и резака (X, Y, Z) задаётся на панели «Точность»; резак бывает «кубом»
 --     или тонкой «полосой» (BuildConfig.BladeThickness);
+--   * «Покраска / Скрижали»: ЛКМ красит деталь выбранным материалом, вешает скрижаль на грань
+--     или очищает грань — смотря какая кисть выбрана в меню (PaintMenuController);
 --   * R — вращение вокруг вертикальной оси Y, T — наклон вперёд/назад (X), Y — наклон вбок (Z);
 --   * ЛКМ — поставить / вырезать / снести (в режиме «Снос»);
 --   * X — быстро удалить свой блок под курсором в любом режиме;
@@ -26,9 +28,11 @@ local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
 local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 local BlockCatalog = require(ReplicatedStorage.Shared.BlockCatalog)
+local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
 local BuildSettingsController = require(script.Parent.BuildSettingsController)
 local GhostPreview = require(script.Parent.GhostPreview)
 local MoveGizmo = require(script.Parent.MoveGizmo)
+local PaintMenuController = require(script.Parent.PaintMenuController)
 
 type BuildHud = {
 	getSelection: () -> (string?, string?),
@@ -36,13 +40,16 @@ type BuildHud = {
 	setFaction: ((factionId: string?) -> ())?,
 }
 
-type Mode = "None" | "Place" | "Carve" | "Delete" | "Move"
+type Mode = "None" | "Place" | "Carve" | "Delete" | "Move" | "Paint"
 
 type Remotes = {
 	place: RemoteEvent,
 	remove: RemoteEvent,
 	carve: RemoteEvent,
 	move: RemoteEvent,
+	paint: RemoteEvent,
+	tablet: RemoteEvent,
+	erase: RemoteEvent,
 	notice: RemoteEvent,
 }
 
@@ -170,12 +177,16 @@ local function syncSize(s: Session)
 	end
 end
 
+local describeBrush: () -> string
+
 local function describeMode(s: Session): string
 	local shapeId = s.shapeId
 	if isBlade(s) then
 		return "Резак-полоса: ЛКМ — разрезать, R — повернуть лезвие"
 	elseif s.mode == "Move" then
 		return "Перенос: ЛКМ по своему блоку, затем тяните стрелки"
+	elseif s.mode == "Paint" then
+		return describeBrush()
 	end
 	if s.mode == "Place" and shapeId then
 		return "Установка: " .. shapeName(shapeId) .. ". ЛКМ — поставить"
@@ -205,6 +216,8 @@ local function applySelection(s: Session, shapeId: string?, toolId: string?)
 		s.mode = "Delete"
 	elseif toolId == BuildConfig.MoveSlotId then
 		s.mode = "Move"
+	elseif toolId == BuildConfig.PaintSlotId then
+		s.mode = "Paint"
 	elseif toolId == nil and hasShape then
 		s.mode = "Place"
 	else
@@ -220,7 +233,10 @@ local function applySelection(s: Session, shapeId: string?, toolId: string?)
 	if s.mode ~= "Move" then
 		s.gizmo.select(nil)
 	end
-	local highlightColor = if s.mode == "Move" then BuildConfig.MoveHighlightColor else BuildConfig.DeleteHighlightColor
+	local highlightColor = if s.mode == "Move"
+		then BuildConfig.MoveHighlightColor
+		elseif s.mode == "Paint" then BuildConfig.PaintHighlightColor
+		else BuildConfig.DeleteHighlightColor
 	s.highlight.FillColor = highlightColor
 	s.highlight.OutlineColor = highlightColor
 	syncSize(s)
@@ -277,6 +293,51 @@ end
 local function tryRemove(s: Session, part: Instance?)
 	if part then
 		s.remotes.remove:FireServer(part)
+	end
+end
+
+-- Деталь своего блока под курсором: цель покраски и скрижалей (у модели — отдельная часть).
+local function paintTarget(s: Session, result: RaycastResult?): BasePart?
+	if result and ownBlockFrom(s, result) then
+		return result.Instance
+	end
+	return nil
+end
+
+function describeBrush(): string
+	local brush = PaintMenuController.getBrush()
+	local id = if brush then brush.id else nil
+	if brush and brush.kind == "Erase" then
+		return "Очистить грань: ЛКМ по грани со скрижалью"
+	elseif brush and brush.kind == "Material" and id then
+		local material = PaintCatalog.MaterialById[id]
+		return "Покраска: " .. (if material then material.displayName else id) .. ". ЛКМ по блоку или детали"
+	elseif brush and brush.kind == "Tablet" and id then
+		local tablet = PaintCatalog.TabletById[id]
+		return "Скрижаль «" .. (if tablet then tablet.title else id) .. "». ЛКМ по грани блока"
+	end
+	return "Покраска / Скрижали: выберите материал или скрижаль в меню"
+end
+
+-- ЛКМ в режиме «Покраска / Скрижали»: действие зависит от выбранной в меню кисти.
+local function tryPaint(s: Session)
+	local brush = PaintMenuController.getBrush()
+	if not brush then
+		BuildSettingsController.notify("Сначала выберите материал или скрижаль в меню")
+		return
+	end
+	local result = raycastMouse(s)
+	local part = paintTarget(s, result)
+	if not result or not part then
+		BuildSettingsController.notify("Наведите курсор на свой блок")
+		return
+	end
+	if brush.kind == "Material" then
+		s.remotes.paint:FireServer(part, brush.id)
+	elseif brush.kind == "Tablet" then
+		s.remotes.tablet:FireServer(part, result.Position, result.Normal, brush.id)
+	else
+		s.remotes.erase:FireServer(part, result.Normal)
 	end
 end
 
@@ -355,6 +416,8 @@ local function step(dt: number)
 		end
 	elseif s.mode == "Delete" then
 		setHovered(s, ownBlockFrom(s, result))
+	elseif s.mode == "Paint" then
+		setHovered(s, paintTarget(s, result))
 	elseif s.mode == "Move" then
 		-- Подсвечиваем блок, который выберет клик (кроме уже выбранного и пока тянут стрелку).
 		local target = if s.gizmo.isBusy() then nil else ownBlockFrom(s, result)
@@ -404,9 +467,16 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	local remove = waitRemote(BuildConfig.RemoveRemoteName)
 	local carve = waitRemote(BuildConfig.CarveRemoteName)
 	local move = waitRemote(BuildConfig.MoveRemoteName)
+	local paint = waitRemote(BuildConfig.PaintRemoteName)
+	local tablet = waitRemote(BuildConfig.TabletRemoteName)
+	local erase = waitRemote(BuildConfig.EraseTabletRemoteName)
 	local notice = waitRemote(BuildConfig.NoticeRemoteName)
 	local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-	if not blocks or not place or not remove or not carve or not move or not notice or not playerGui then
+	if not blocks or not place or not remove or not carve or not move then
+		warn("[BuildController] Не найдены Blocks или RemoteEvent'ы, строительство не включено")
+		return false
+	end
+	if not paint or not tablet or not erase or not notice or not playerGui then
 		warn("[BuildController] Не найдены Blocks или RemoteEvent'ы, строительство не включено")
 		return false
 	end
@@ -432,7 +502,16 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	local s: Session = {
 		plot = plot,
 		blocks = blocks,
-		remotes = { place = place, remove = remove, carve = carve, move = move, notice = notice },
+		remotes = {
+			place = place,
+			remove = remove,
+			carve = carve,
+			move = move,
+			paint = paint,
+			tablet = tablet,
+			erase = erase,
+			notice = notice,
+		},
 		previewFolder = previewFolder,
 		ghost = GhostPreview.new(previewFolder),
 		gizmo = MoveGizmo.new(plot, previewFolder, playerGui, {
@@ -479,6 +558,14 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	)
 
 	-- Кнопка «Сброс» на панели «Точность»: все углы в 0.
+	-- Смена кисти в меню «Покраска / Скрижали»: обновляем подпись режима.
+	table.insert(
+		s.connections,
+		PaintMenuController.Changed:Connect(function()
+			BuildSettingsController.setMode(describeMode(s))
+		end)
+	)
+
 	-- Смена формы резака или размера на панели: обновляем призрак и подпись режима.
 	table.insert(
 		s.connections,
@@ -540,6 +627,8 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 					tryCarve(s)
 				elseif s.mode == "Delete" then
 					tryRemove(s, ownBlockFrom(s, raycastMouse(s)))
+				elseif s.mode == "Paint" then
+					tryPaint(s)
 				elseif s.mode == "Move" then
 					-- Откладываем на такт: клик по стрелке — это перетаскивание, а не смена выбора.
 					task.defer(function()

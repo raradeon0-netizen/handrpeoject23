@@ -50,6 +50,13 @@ local function adopt(union: BasePart, original: BasePart)
 	union.CanTouch = true
 	union.Material = original.Material
 	union.Color = original.Color
+	union.Reflectance = original.Reflectance
+	-- Скрижали с граней исходного блока переезжают на результат.
+	for _, child in original:GetChildren() do
+		if child:GetAttribute(BuildConfig.Attributes.TabletId) ~= nil then
+			child.Parent = union
+		end
+	end
 	if union:IsA("UnionOperation") then
 		-- Стенки среза красим цветом блока, а не цветом резака.
 		union.UsePartColor = true

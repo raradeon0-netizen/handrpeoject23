@@ -27,7 +27,7 @@ function BlockMover.move(plot: BasePart, block: Instance, localOffset: Vector3):
 		return false, "Сюда передвинуть нельзя: мешает другой блок"
 	end
 
-	block:PivotTo(block:GetPivot() + plot.CFrame:VectorToWorldSpace(offset))
+	BuildGrid.shiftBlock(block, plot.CFrame:VectorToWorldSpace(offset))
 	return true, nil
 end
 

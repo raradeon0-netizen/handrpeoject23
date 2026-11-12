@@ -35,6 +35,9 @@ BuildConfig.PlaceRemoteName = "PlaceBlock"
 BuildConfig.RemoveRemoteName = "RemoveBlock"
 BuildConfig.CarveRemoteName = "CarveBlock"
 BuildConfig.MoveRemoteName = "MoveBlock"
+BuildConfig.PaintRemoteName = "PaintBlock"
+BuildConfig.TabletRemoteName = "PlaceTablet"
+BuildConfig.EraseTabletRemoteName = "EraseTablet"
 BuildConfig.NoticeRemoteName = "BuildNotice" -- сервер -> клиент: короткие сообщения для панели
 
 -- Папки внутри Part участка. Лежат внутри участка, поэтому удаляются вместе с ним.
@@ -66,6 +69,7 @@ BuildConfig.EdgeInset = 4
 BuildConfig.CarveSlotId = "Carve"
 BuildConfig.DeleteSlotId = "Delete"
 BuildConfig.MoveSlotId = "Move" -- перенос блока 3D-стрелками
+BuildConfig.PaintSlotId = "Paint" -- меню «Покраска / Скрижали»
 BuildConfig.CatalogSlotId = "Blocks" -- кнопка «Блоки»: открывает каталог форм
 
 -- Горячие клавиши редактора (ПКМ не используется — она только вращает камеру).
@@ -84,6 +88,13 @@ BuildConfig.CarveCooldown = 0.35 -- CSG — дорогая операция
 BuildConfig.MaxBlocksPerPlayer = 2000
 BuildConfig.MaxCarveTargets = 8 -- сколько блоков максимум прорезает один клик
 BuildConfig.MoveCooldown = 0.1 -- секунд между переносами
+BuildConfig.PaintCooldown = 0.05 -- секунд между покрасками
+BuildConfig.TabletCooldown = 0.3 -- секунд между скрижалями
+BuildConfig.MaxTabletsPerPlayer = 60
+
+-- Скрижаль: полный размер плиты (ширина, высота, толщина); на узкой грани она уменьшается.
+BuildConfig.TabletSize = Vector3.new(6, 4, 0.2)
+BuildConfig.TabletMinWidth = 1.5
 
 -- Пользовательский размер базовых блоков и резака (панель «Точность»).
 BuildConfig.MinBlockSize = 0.25
@@ -193,6 +204,7 @@ BuildConfig.DeleteHighlightColor = Color3.fromRGB(255, 70, 70)
 
 -- Режим «Двигать»: подсветка блока, цвет стрелок, ожидание ответа сервера.
 BuildConfig.MoveHighlightColor = Color3.fromRGB(90, 170, 255)
+BuildConfig.PaintHighlightColor = Color3.fromRGB(255, 200, 60)
 BuildConfig.MoveHandlesColor = Color3.fromRGB(255, 200, 60)
 BuildConfig.MovePendingTimeout = 1
 
@@ -203,6 +215,7 @@ BuildConfig.NoticeDuration = 3
 BuildConfig.Attributes = {
 	OwnerUserId = "OwnerUserId",
 	ShapeId = "ShapeId",
+	TabletId = "TabletId", -- стоит на плите скрижали (потомок детали блока)
 }
 
 return BuildConfig

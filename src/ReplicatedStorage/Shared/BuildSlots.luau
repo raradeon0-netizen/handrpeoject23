@@ -20,7 +20,7 @@ BuildSlots.List = {
 	{ id = "Carve", displayName = "Вырезать", description = "Проёмы и окна", kind = "Tool" },
 	{ id = "Move", displayName = "Двигать", description = "Стрелки X / Y / Z", kind = "Tool" },
 	{ id = "Delete", displayName = "Снос", description = "ЛКМ или X", kind = "Tool" },
-	{ id = "Paint", displayName = "Покраска / Скрижали", description = "Скоро", kind = "Tool", wide = true },
+	{ id = "Paint", displayName = "Покраска / Скрижали", description = "Материалы и надписи", kind = "Tool", wide = true },
 } :: { Slot }
 
 -- Быстрый поиск по id: BuildSlots.ById.Carve

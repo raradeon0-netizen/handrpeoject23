@@ -410,17 +410,31 @@ end
 BuildGrid.roundVector = roundVector
 
 -- Все детали блока: сам Part / CSG-результат или детали составной модели.
+-- Скрижали (декор на гранях) в габарит и пересечения не входят.
 function BuildGrid.blockParts(block: Instance): { BasePart }
 	local parts: { BasePart } = {}
 	if block:IsA("BasePart") then
 		table.insert(parts, block)
 	end
 	for _, descendant in block:GetDescendants() do
-		if descendant:IsA("BasePart") then
+		if descendant:IsA("BasePart") and descendant:GetAttribute(BuildConfig.Attributes.TabletId) == nil then
 			table.insert(parts, descendant)
 		end
 	end
 	return parts
+end
+
+-- Сдвигает блок целиком. У одиночной детали PivotTo не двигает потомков,
+-- поэтому висящие на ней скрижали переносим вручную.
+function BuildGrid.shiftBlock(block: PVInstance, worldOffset: Vector3)
+	block:PivotTo(block:GetPivot() + worldOffset)
+	if block:IsA("BasePart") then
+		for _, descendant in block:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				descendant.CFrame += worldOffset
+			end
+		end
+	end
 end
 
 -- Габарит блока по осям участка: центр и размеры в координатах участка.

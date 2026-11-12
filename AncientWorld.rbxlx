@@ -920,7 +920,7 @@ BuildSlots.List = {
 	{ id = "Carve", displayName = "Вырезать", description = "Проёмы и окна", kind = "Tool" },
 	{ id = "Move", displayName = "Двигать", description = "Стрелки X / Y / Z", kind = "Tool" },
 	{ id = "Delete", displayName = "Снос", description = "ЛКМ или X", kind = "Tool" },
-	{ id = "Paint", displayName = "Покраска / Скрижали", description = "Скоро", kind = "Tool", wide = true },
+	{ id = "Paint", displayName = "Покраска / Скрижали", description = "Материалы и надписи", kind = "Tool", wide = true },
 } :: { Slot }
 
 -- Быстрый поиск по id: BuildSlots.ById.Carve
@@ -970,6 +970,9 @@ BuildConfig.PlaceRemoteName = "PlaceBlock"
 BuildConfig.RemoveRemoteName = "RemoveBlock"
 BuildConfig.CarveRemoteName = "CarveBlock"
 BuildConfig.MoveRemoteName = "MoveBlock"
+BuildConfig.PaintRemoteName = "PaintBlock"
+BuildConfig.TabletRemoteName = "PlaceTablet"
+BuildConfig.EraseTabletRemoteName = "EraseTablet"
 BuildConfig.NoticeRemoteName = "BuildNotice" -- сервер -> клиент: короткие сообщения для панели
 
 -- Папки внутри Part участка. Лежат внутри участка, поэтому удаляются вместе с ним.
@@ -1001,6 +1004,7 @@ BuildConfig.EdgeInset = 4
 BuildConfig.CarveSlotId = "Carve"
 BuildConfig.DeleteSlotId = "Delete"
 BuildConfig.MoveSlotId = "Move" -- перенос блока 3D-стрелками
+BuildConfig.PaintSlotId = "Paint" -- меню «Покраска / Скрижали»
 BuildConfig.CatalogSlotId = "Blocks" -- кнопка «Блоки»: открывает каталог форм
 
 -- Горячие клавиши редактора (ПКМ не используется — она только вращает камеру).
@@ -1019,6 +1023,13 @@ BuildConfig.CarveCooldown = 0.35 -- CSG — дорогая операция
 BuildConfig.MaxBlocksPerPlayer = 2000
 BuildConfig.MaxCarveTargets = 8 -- сколько блоков максимум прорезает один клик
 BuildConfig.MoveCooldown = 0.1 -- секунд между переносами
+BuildConfig.PaintCooldown = 0.05 -- секунд между покрасками
+BuildConfig.TabletCooldown = 0.3 -- секунд между скрижалями
+BuildConfig.MaxTabletsPerPlayer = 60
+
+-- Скрижаль: полный размер плиты (ширина, высота, толщина); на узкой грани она уменьшается.
+BuildConfig.TabletSize = Vector3.new(6, 4, 0.2)
+BuildConfig.TabletMinWidth = 1.5
 
 -- Пользовательский размер базовых блоков и резака (панель «Точность»).
 BuildConfig.MinBlockSize = 0.25
@@ -1128,6 +1139,7 @@ BuildConfig.DeleteHighlightColor = Color3.fromRGB(255, 70, 70)
 
 -- Режим «Двигать»: подсветка блока, цвет стрелок, ожидание ответа сервера.
 BuildConfig.MoveHighlightColor = Color3.fromRGB(90, 170, 255)
+BuildConfig.PaintHighlightColor = Color3.fromRGB(255, 200, 60)
 BuildConfig.MoveHandlesColor = Color3.fromRGB(255, 200, 60)
 BuildConfig.MovePendingTimeout = 1
 
@@ -1138,6 +1150,7 @@ BuildConfig.NoticeDuration = 3
 BuildConfig.Attributes = {
 	OwnerUserId = "OwnerUserId",
 	ShapeId = "ShapeId",
+	TabletId = "TabletId", -- стоит на плите скрижали (потомок детали блока)
 }
 
 return BuildConfig
@@ -1554,17 +1567,31 @@ end
 BuildGrid.roundVector = roundVector
 
 -- Все детали блока: сам Part / CSG-результат или детали составной модели.
+-- Скрижали (декор на гранях) в габарит и пересечения не входят.
 function BuildGrid.blockParts(block: Instance): { BasePart }
 	local parts: { BasePart } = {}
 	if block:IsA("BasePart") then
 		table.insert(parts, block)
 	end
 	for _, descendant in block:GetDescendants() do
-		if descendant:IsA("BasePart") then
+		if descendant:IsA("BasePart") and descendant:GetAttribute(BuildConfig.Attributes.TabletId) == nil then
 			table.insert(parts, descendant)
 		end
 	end
 	return parts
+end
+
+-- Сдвигает блок целиком. У одиночной детали PivotTo не двигает потомков,
+-- поэтому висящие на ней скрижали переносим вручную.
+function BuildGrid.shiftBlock(block: PVInstance, worldOffset: Vector3)
+	block:PivotTo(block:GetPivot() + worldOffset)
+	if block:IsA("BasePart") then
+		for _, descendant in block:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				descendant.CFrame += worldOffset
+			end
+		end
+	end
 end
 
 -- Габарит блока по осям участка: центр и размеры в координатах участка.
@@ -1687,6 +1714,120 @@ function BuildSize.blade(size: Vector3): Vector3
 end
 
 return BuildSize
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD48"><Properties><string name="Name">PaintCatalog</string><string name="Source"><![CDATA[--!strict
+-- PaintCatalog: единый источник данных меню «Покраска / Скрижали».
+-- Клиент рисует по нему образцы и карточки, сервер по id находит материал или текст скрижали.
+
+export type Material = {
+	id: string,
+	displayName: string,
+	material: Enum.Material,
+	color: Color3,
+	reflectance: number,
+}
+
+export type TabletStyle = "Stone" | "Papyrus"
+
+export type Tablet = {
+	id: string,
+	title: string,
+	factionId: string, -- «родная» фракция (скрижали доступны всем, своя отмечается ★)
+	factionName: string,
+	style: TabletStyle,
+	text: string,
+}
+
+local PaintCatalog = {}
+
+PaintCatalog.Materials = {
+	{
+		id = "Gold",
+		displayName = "Золото",
+		material = Enum.Material.Foil,
+		color = Color3.fromRGB(212, 175, 55),
+		reflectance = 0.2,
+	},
+	{
+		id = "Lapis",
+		displayName = "Лазурит",
+		material = Enum.Material.Marble,
+		color = Color3.fromRGB(34, 76, 164),
+		reflectance = 0.05,
+	},
+	{
+		id = "Marble",
+		displayName = "Мрамор",
+		material = Enum.Material.Marble,
+		color = Color3.fromRGB(240, 238, 232),
+		reflectance = 0,
+	},
+	{
+		id = "Sandstone",
+		displayName = "Песчаник",
+		material = Enum.Material.Sandstone,
+		color = Color3.fromRGB(214, 180, 120),
+		reflectance = 0,
+	},
+	{
+		id = "Obsidian",
+		displayName = "Обсидиан",
+		material = Enum.Material.Slate,
+		color = Color3.fromRGB(24, 22, 30),
+		reflectance = 0.18,
+	},
+	{
+		id = "Bronze",
+		displayName = "Бронза",
+		material = Enum.Material.Metal,
+		color = Color3.fromRGB(176, 114, 54),
+		reflectance = 0.1,
+	},
+} :: { Material }
+
+PaintCatalog.Tablets = {
+	{
+		id = "Tutankhamun",
+		title = "Захоронение Тутанхамона",
+		factionId = "Egypt",
+		factionName = "Египет",
+		style = "Papyrus",
+		text = "Тутанхамон был славным правителем, считался одним из лучших богов. "
+			.. "Жаль, он нас покинул и не освятил нашу пирамиду, вот и захоронился в ней...",
+	},
+	{
+		id = "Caesar",
+		title = "Дух Цезаря",
+		factionId = "Rome",
+		factionName = "Рим",
+		style = "Stone",
+		text = "Был один бог Цезарь, прославил и отдал половину духа в Колизей. "
+			.. "Вот Цезарь любил народ, восхищался Колизеем, и проживет тот 1000 лет. "
+			.. "Но к сожалению, бог не вечный — предал нашу душу брат его честной...",
+	},
+	{
+		id = "Olympus",
+		title = "Пророчество Олимпа",
+		factionId = "Greece",
+		factionName = "Греция",
+		style = "Stone",
+		text = "Боги спустились с Олимпа и велели воздвигнуть этот храм. "
+			.. "Коли колонны коснутся облаков, Зевс благословит народ, "
+			.. "а коли дрогнут — пошлет грозу на земли наши...",
+	},
+} :: { Tablet }
+
+PaintCatalog.MaterialById = {} :: { [string]: Material }
+for _, material in PaintCatalog.Materials do
+	PaintCatalog.MaterialById[material.id] = material
+end
+
+PaintCatalog.TabletById = {} :: { [string]: Tablet }
+for _, tablet in PaintCatalog.Tablets do
+	PaintCatalog.TabletById[tablet.id] = tablet
+end
+
+return PaintCatalog
 ]]></string></Properties></Item>
 </Item>
   </Item>
@@ -2287,11 +2428,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
 local BuildSize = require(ReplicatedStorage.Shared.BuildSize)
+local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
 
 local PlotOwnership = require(script.Parent.PlotOwnership)
 local BlockFactory = require(script.Parent.BlockFactory)
 local BlockCarver = require(script.Parent.BlockCarver)
 local BlockMover = require(script.Parent.BlockMover)
+local BlockPainter = require(script.Parent.BlockPainter)
+local TabletFactory = require(script.Parent.TabletFactory)
 
 -- Шаг 1. RemoteEvent'ы для клиента.
 local function makeRemote(name: string): RemoteEvent
@@ -2305,6 +2449,9 @@ local placeRemote = makeRemote(BuildConfig.PlaceRemoteName)
 local removeRemote = makeRemote(BuildConfig.RemoveRemoteName)
 local carveRemote = makeRemote(BuildConfig.CarveRemoteName)
 local moveRemote = makeRemote(BuildConfig.MoveRemoteName)
+local paintRemote = makeRemote(BuildConfig.PaintRemoteName)
+local tabletRemote = makeRemote(BuildConfig.TabletRemoteName)
+local eraseRemote = makeRemote(BuildConfig.EraseTabletRemoteName)
 local noticeRemote = makeRemote(BuildConfig.NoticeRemoteName)
 
 type ShapeRequest = {
@@ -2592,6 +2739,87 @@ moveRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown, loca
 	end
 end)
 
+-- Полезная цель покраски / скрижали: деталь своего блока (сама скрижаль целью не считается).
+local function findOwnPart(player: Player, clicked: unknown): (BasePart?, PlotOwnership.Claim?)
+	if typeof(clicked) ~= "Instance" or not clicked:IsA("BasePart") then
+		return nil, nil
+	end
+	if clicked:GetAttribute(BuildConfig.Attributes.TabletId) ~= nil then
+		return nil, nil
+	end
+	local block, claim = findOwnBlock(player, clicked)
+	if not block or not claim then
+		return nil, nil
+	end
+	return clicked, claim
+end
+
+-- Покраска: клиент присылает деталь, по которой кликнул, и id материала из PaintCatalog.
+paintRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown, materialId: unknown)
+	if typeof(materialId) ~= "string" then
+		return
+	end
+	local material = PaintCatalog.MaterialById[materialId]
+	if not material or not cooldownPassed(player, "paint", BuildConfig.PaintCooldown) then
+		return
+	end
+	local part = findOwnPart(player, clicked)
+	if part then
+		BlockPainter.paint(part, material)
+	end
+end)
+
+-- Скрижаль: деталь, точка и нормаль попадания луча, id скрижали.
+tabletRemote.OnServerEvent:Connect(
+	function(player: Player, clicked: unknown, hitPos: unknown, hitNormal: unknown, tabletId: unknown)
+		if typeof(hitPos) ~= "Vector3" or typeof(hitNormal) ~= "Vector3" or typeof(tabletId) ~= "string" then
+			return
+		end
+		local tablet = PaintCatalog.TabletById[tabletId]
+		if not tablet or not isFiniteVector(hitPos) or not isFiniteVector(hitNormal) then
+			return
+		end
+		if math.abs(hitNormal.Magnitude - 1) > 0.01 then
+			return
+		end
+		if not cooldownPassed(player, "tablet", BuildConfig.TabletCooldown) then
+			return
+		end
+		local part, claim = findOwnPart(player, clicked)
+		if not part or not claim or not PlotOwnership.canBuildAt(player, hitPos) then
+			return
+		end
+		-- Точка должна лежать на самой детали, а не где-то в стороне от неё.
+		local offset = part.CFrame:PointToObjectSpace(hitPos)
+		local reach = part.Size / 2 + Vector3.one * 0.5
+		if math.abs(offset.X) > reach.X or math.abs(offset.Y) > reach.Y or math.abs(offset.Z) > reach.Z then
+			return
+		end
+		if TabletFactory.count(getBlocksFolder(claim.plot)) >= BuildConfig.MaxTabletsPerPlayer then
+			notify(player, string.format("Достигнут лимит: %d скрижалей", BuildConfig.MaxTabletsPerPlayer))
+			return
+		end
+		TabletFactory.place(claim.plot, part, hitPos, hitNormal, tablet)
+	end
+)
+
+-- «Очистить грань»: снять скрижали с грани, по которой кликнули.
+eraseRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown, hitNormal: unknown)
+	if typeof(hitNormal) ~= "Vector3" or not isFiniteVector(hitNormal) then
+		return
+	end
+	if math.abs(hitNormal.Magnitude - 1) > 0.01 then
+		return
+	end
+	if not cooldownPassed(player, "erase", BuildConfig.PaintCooldown) then
+		return
+	end
+	local part = findOwnPart(player, clicked)
+	if part and TabletFactory.erase(part, hitNormal) == 0 then
+		notify(player, "На этой грани нет скрижалей")
+	end
+end)
+
 Players.PlayerRemoving:Connect(function(player: Player)
 	lastAction[player] = nil
 	carving[player] = nil
@@ -2711,6 +2939,13 @@ local function adopt(union: BasePart, original: BasePart)
 	union.CanTouch = true
 	union.Material = original.Material
 	union.Color = original.Color
+	union.Reflectance = original.Reflectance
+	-- Скрижали с граней исходного блока переезжают на результат.
+	for _, child in original:GetChildren() do
+		if child:GetAttribute(BuildConfig.Attributes.TabletId) ~= nil then
+			child.Parent = union
+		end
+	end
 	if union:IsA("UnionOperation") then
 		-- Стенки среза красим цветом блока, а не цветом резака.
 		union.UsePartColor = true
@@ -2802,11 +3037,248 @@ function BlockMover.move(plot: BasePart, block: Instance, localOffset: Vector3):
 		return false, "Сюда передвинуть нельзя: мешает другой блок"
 	end
 
-	block:PivotTo(block:GetPivot() + plot.CFrame:VectorToWorldSpace(offset))
+	BuildGrid.shiftBlock(block, plot.CFrame:VectorToWorldSpace(offset))
 	return true, nil
 end
 
 return BlockMover
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD49"><Properties><string name="Name">BlockPainter</string><string name="Source"><![CDATA[--!strict
+-- BlockPainter (сервер): перекраска одной детали блока материалом из PaintCatalog.
+-- Красится именно та деталь, по которой кликнули: у составной модели — отдельная часть.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
+
+local BlockPainter = {}
+
+function BlockPainter.paint(part: BasePart, material: PaintCatalog.Material)
+	part.Material = material.material
+	part.Color = material.color
+	part.Reflectance = material.reflectance
+	if part:IsA("PartOperation") then
+		part.UsePartColor = true -- иначе CSG-результат сохранит цвета исходных деталей
+	end
+end
+
+return BlockPainter
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD50"><Properties><string name="Name">TabletFactory</string><string name="Source"><![CDATA[--!strict
+-- TabletFactory (сервер): декоративные скрижали с надписью на гранях блоков.
+--   * скрижаль — тонкая плита, прижатая к грани по нормали попадания луча, с SurfaceGui на лицевой стороне;
+--   * она становится потомком детали, на которую повешена: сносится и переезжает вместе с блоком;
+--   * плита не участвует в коллизиях и запросах (CanQuery = false), поэтому не мешает стройке,
+--     а клики «проходят» сквозь неё в блок — так работает «Очистить грань».
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
+local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
+local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
+
+type Look = {
+	material: Enum.Material,
+	color: Color3,
+	ink: Color3,
+}
+
+local LOOKS: { [PaintCatalog.TabletStyle]: Look } = {
+	Stone = {
+		material = Enum.Material.Limestone,
+		color = Color3.fromRGB(196, 186, 165),
+		ink = Color3.fromRGB(46, 38, 30),
+	},
+	Papyrus = {
+		material = Enum.Material.Fabric,
+		color = Color3.fromRGB(224, 202, 150),
+		ink = Color3.fromRGB(84, 50, 22),
+	},
+}
+
+local PIXELS_PER_STUD = 60
+local TABLET_FONT = Enum.Font.Garamond -- античная антиква с кириллицей
+local SAME_FACE_DOT = 0.9 -- скрижаль считается висящей на грани, если смотрит почти туда же
+
+local TabletFactory = {}
+
+local function isTablet(instance: Instance): boolean
+	return instance:GetAttribute(BuildConfig.Attributes.TabletId) ~= nil
+end
+
+local function isBox(part: BasePart): boolean
+	return part:IsA("Part") and part.Shape == Enum.PartType.Block
+end
+
+-- Протяжённость детали вдоль направления (для грани бокса — её ширина или высота).
+local function span(part: BasePart, direction: Vector3): number
+	local cframe, size = part.CFrame, part.Size
+	return math.abs(direction:Dot(cframe.RightVector)) * size.X
+		+ math.abs(direction:Dot(cframe.UpVector)) * size.Y
+		+ math.abs(direction:Dot(cframe.LookVector)) * size.Z
+end
+
+local function makeLabel(name: string, text: string, look: Look, parent: Instance): TextLabel
+	local label = Instance.new("TextLabel")
+	label.Name = name
+	label.Text = text
+	label.Font = TABLET_FONT
+	label.TextColor3 = look.ink
+	label.TextScaled = true
+	label.TextWrapped = true
+	label.BackgroundTransparency = 1
+	label.Parent = parent
+	return label
+end
+
+local function buildInscription(tablet: PaintCatalog.Tablet, look: Look, parent: BasePart)
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "Inscription"
+	gui.Face = Enum.NormalId.Front
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = PIXELS_PER_STUD
+	gui.LightInfluence = 0.4
+	gui.Parent = parent
+
+	-- Рамка с отступом от края плиты.
+	local border = Instance.new("Frame")
+	border.Name = "Border"
+	border.AnchorPoint = Vector2.new(0.5, 0.5)
+	border.Position = UDim2.fromScale(0.5, 0.5)
+	border.Size = UDim2.fromScale(0.94, 0.9)
+	border.BackgroundTransparency = 1
+	border.Parent = gui
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = look.ink
+	stroke.Thickness = 3
+	stroke.Transparency = 0.35
+	stroke.Parent = border
+
+	local title = makeLabel("Title", tablet.title, look, border)
+	title.Position = UDim2.fromScale(0.05, 0.05)
+	title.Size = UDim2.fromScale(0.9, 0.2)
+
+	local divider = Instance.new("Frame")
+	divider.Name = "Divider"
+	divider.AnchorPoint = Vector2.new(0.5, 0)
+	divider.Position = UDim2.fromScale(0.5, 0.27)
+	divider.Size = UDim2.new(0.6, 0, 0, 2)
+	divider.BackgroundColor3 = look.ink
+	divider.BackgroundTransparency = 0.35
+	divider.BorderSizePixel = 0
+	divider.Parent = border
+
+	local body = makeLabel("Body", tablet.text, look, border)
+	body.Position = UDim2.fromScale(0.05, 0.31)
+	body.Size = UDim2.fromScale(0.9, 0.63)
+end
+
+-- Вешает скрижаль на грань детали part в точке попадания луча (hitPos, hitNormal — мировые).
+function TabletFactory.place(
+	plot: BasePart,
+	part: BasePart,
+	hitPos: Vector3,
+	hitNormal: Vector3,
+	tablet: PaintCatalog.Tablet
+): BasePart
+	local full = BuildConfig.TabletSize
+	local aspect = full.X / full.Y
+	local point, normal = hitPos, hitNormal.Unit
+
+	-- У бокса берём точную грань: скрижаль ложится вплотную, без наклона от погрешности нормали.
+	local faceCenter: Vector3? = nil
+	if isBox(part) then
+		local center, faceNormal = BuildGrid.getFace(part, normal)
+		faceCenter, normal = center, faceNormal
+		point -= normal * (point - center):Dot(normal)
+	end
+
+	-- Верх надписи — вверх участка; на горизонтальной грани — «вперёд» участка.
+	local plotCFrame = plot.CFrame
+	local up = if math.abs(normal:Dot(plotCFrame.UpVector)) > 0.99 then plotCFrame.LookVector else plotCFrame.UpVector
+	local facing = CFrame.lookAt(point, point + normal, up)
+	local right, top = facing.RightVector, facing.UpVector
+
+	-- Не шире и не выше грани (но и не мельче читаемого минимума).
+	local spanRight, spanTop = span(part, right), span(part, top)
+	local width = math.clamp(spanRight, BuildConfig.TabletMinWidth, full.X)
+	local height = math.min(width / aspect, math.max(spanTop, BuildConfig.TabletMinWidth / aspect))
+	width = height * aspect
+
+	if faceCenter then
+		-- Сдвигаем к центру грани ровно настолько, чтобы плита не свисала с края.
+		local offset = point - faceCenter
+		local limitRight = math.max((spanRight - width) / 2, 0)
+		local limitTop = math.max((spanTop - height) / 2, 0)
+		point = faceCenter
+			+ right * math.clamp(offset:Dot(right), -limitRight, limitRight)
+			+ top * math.clamp(offset:Dot(top), -limitTop, limitTop)
+	end
+
+	local position = point + normal * (full.Z / 2)
+
+	-- Новая скрижаль заменяет те, что она перекрыла бы на этой же грани.
+	for _, child in part:GetChildren() do
+		if
+			child:IsA("BasePart")
+			and isTablet(child)
+			and child.CFrame.LookVector:Dot(normal) > SAME_FACE_DOT
+			and (child.Position - position).Magnitude < math.max(height, child.Size.Y)
+		then
+			child:Destroy()
+		end
+	end
+
+	local look = LOOKS[tablet.style]
+	local plaque = Instance.new("Part")
+	plaque.Name = "Tablet"
+	plaque.Size = Vector3.new(width, height, full.Z)
+	plaque.CFrame = CFrame.lookAt(position, position + normal, up) -- лицевая грань (Front) смотрит наружу
+	plaque.Anchored = true
+	plaque.CanCollide = false
+	plaque.CanQuery = false
+	plaque.CanTouch = false
+	plaque.CastShadow = false
+	plaque.Material = look.material
+	plaque.Color = look.color
+	plaque.TopSurface = Enum.SurfaceType.Smooth
+	plaque.BottomSurface = Enum.SurfaceType.Smooth
+	plaque:SetAttribute(BuildConfig.Attributes.TabletId, tablet.id)
+	buildInscription(tablet, look, plaque)
+	plaque.Parent = part
+	return plaque
+end
+
+-- Снимает все скрижали с грани детали, на которую указывает нормаль. Возвращает их число.
+function TabletFactory.erase(part: BasePart, hitNormal: Vector3): number
+	local normal = hitNormal.Unit
+	if isBox(part) then
+		local _, faceNormal = BuildGrid.getFace(part, normal)
+		normal = faceNormal
+	end
+	local removed = 0
+	for _, child in part:GetChildren() do
+		if child:IsA("BasePart") and isTablet(child) and child.CFrame.LookVector:Dot(normal) > SAME_FACE_DOT then
+			child:Destroy()
+			removed += 1
+		end
+	end
+	return removed
+end
+
+-- Сколько скрижалей уже висит на постройках участка.
+function TabletFactory.count(blocks: Instance): number
+	local total = 0
+	for _, descendant in blocks:GetDescendants() do
+		if isTablet(descendant) then
+			total += 1
+		end
+	end
+	return total
+end
+
+return TabletFactory
 ]]></string></Properties></Item>
 </Item>
   </Item>
@@ -4099,6 +4571,7 @@ local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BlockCatalog = require(ReplicatedStorage.Shared.BlockCatalog)
 local BuildHudView = require(script.Parent.BuildHudView)
 local BlockPickerController = require(script.Parent.BlockPickerController)
+local PaintMenuController = require(script.Parent.PaintMenuController)
 local ScaleSettings = require(script.Parent.ScaleSettings)
 local Theme = require(script.Parent.Theme)
 
@@ -4127,6 +4600,7 @@ end
 function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	local view = BuildHudView.build(playerGui)
 	local picker = BlockPickerController.new(view.gui)
+	PaintMenuController.attach(view.gui)
 
 	local shapeId: string? = nil
 	local toolId: string? = nil
@@ -4185,6 +4659,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	end
 
 	local function toggleCatalog()
+		PaintMenuController.close() -- каталог и меню покраски занимают одно место
 		picker.toggle()
 		refresh()
 	end
@@ -4206,12 +4681,21 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 			shapeId = pickedId
 		end
 		picker.close()
+		PaintMenuController.close()
 		fire()
 	end)
 
 	local function onSlotClicked(slot: BuildSlots.Slot)
 		if slot.kind == "Catalog" then
 			toggleCatalog()
+			return
+		end
+		local isPaint = slot.id == BuildConfig.PaintSlotId
+		if isPaint and toolId == slot.id and not PaintMenuController.isOpen() then
+			-- Инструмент уже включён, меню закрыто после выбора кисти: открываем его снова.
+			picker.close()
+			PaintMenuController.open()
+			refresh()
 			return
 		end
 		if toolId == slot.id then
@@ -4221,6 +4705,12 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 			if SHAPE_TOOLS[slot.id] and (shapeId == nil or isPrefab(shapeId)) then
 				shapeId = DEFAULT_CARVE_SHAPE -- резаку нужна базовая форма: по умолчанию «Блок»
 			end
+		end
+		if isPaint and toolId == slot.id then
+			picker.close()
+			PaintMenuController.open()
+		else
+			PaintMenuController.close()
 		end
 		fire()
 	end
@@ -4256,6 +4746,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	local function hide()
 		visible = false
 		picker.close()
+		PaintMenuController.close()
 		local tween = TweenService:Create(view.panel, Theme.TweenInfo, { Position = BuildHudView.PanelHiddenPosition })
 		tween.Completed:Once(function()
 			if not visible then
@@ -4276,6 +4767,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 		SelectionChanged = selectionChanged.Event,
 		setFaction = function(factionId: string?)
 			picker.setFaction(factionId)
+			PaintMenuController.setFaction(factionId)
 		end,
 	}
 end
@@ -4472,6 +4964,8 @@ return UIFactory
 --   * «Двигать»: ЛКМ по своему блоку показывает 3D-стрелки X / Y / Z (MoveGizmo), перенос идёт по шагу сетки;
 --   * размер базовых блоков и резака (X, Y, Z) задаётся на панели «Точность»; резак бывает «кубом»
 --     или тонкой «полосой» (BuildConfig.BladeThickness);
+--   * «Покраска / Скрижали»: ЛКМ красит деталь выбранным материалом, вешает скрижаль на грань
+--     или очищает грань — смотря какая кисть выбрана в меню (PaintMenuController);
 --   * R — вращение вокруг вертикальной оси Y, T — наклон вперёд/назад (X), Y — наклон вбок (Z);
 --   * ЛКМ — поставить / вырезать / снести (в режиме «Снос»);
 --   * X — быстро удалить свой блок под курсором в любом режиме;
@@ -4487,9 +4981,11 @@ local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
 local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 local BlockCatalog = require(ReplicatedStorage.Shared.BlockCatalog)
+local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
 local BuildSettingsController = require(script.Parent.BuildSettingsController)
 local GhostPreview = require(script.Parent.GhostPreview)
 local MoveGizmo = require(script.Parent.MoveGizmo)
+local PaintMenuController = require(script.Parent.PaintMenuController)
 
 type BuildHud = {
 	getSelection: () -> (string?, string?),
@@ -4497,13 +4993,16 @@ type BuildHud = {
 	setFaction: ((factionId: string?) -> ())?,
 }
 
-type Mode = "None" | "Place" | "Carve" | "Delete" | "Move"
+type Mode = "None" | "Place" | "Carve" | "Delete" | "Move" | "Paint"
 
 type Remotes = {
 	place: RemoteEvent,
 	remove: RemoteEvent,
 	carve: RemoteEvent,
 	move: RemoteEvent,
+	paint: RemoteEvent,
+	tablet: RemoteEvent,
+	erase: RemoteEvent,
 	notice: RemoteEvent,
 }
 
@@ -4631,12 +5130,16 @@ local function syncSize(s: Session)
 	end
 end
 
+local describeBrush: () -> string
+
 local function describeMode(s: Session): string
 	local shapeId = s.shapeId
 	if isBlade(s) then
 		return "Резак-полоса: ЛКМ — разрезать, R — повернуть лезвие"
 	elseif s.mode == "Move" then
 		return "Перенос: ЛКМ по своему блоку, затем тяните стрелки"
+	elseif s.mode == "Paint" then
+		return describeBrush()
 	end
 	if s.mode == "Place" and shapeId then
 		return "Установка: " .. shapeName(shapeId) .. ". ЛКМ — поставить"
@@ -4666,6 +5169,8 @@ local function applySelection(s: Session, shapeId: string?, toolId: string?)
 		s.mode = "Delete"
 	elseif toolId == BuildConfig.MoveSlotId then
 		s.mode = "Move"
+	elseif toolId == BuildConfig.PaintSlotId then
+		s.mode = "Paint"
 	elseif toolId == nil and hasShape then
 		s.mode = "Place"
 	else
@@ -4681,7 +5186,10 @@ local function applySelection(s: Session, shapeId: string?, toolId: string?)
 	if s.mode ~= "Move" then
 		s.gizmo.select(nil)
 	end
-	local highlightColor = if s.mode == "Move" then BuildConfig.MoveHighlightColor else BuildConfig.DeleteHighlightColor
+	local highlightColor = if s.mode == "Move"
+		then BuildConfig.MoveHighlightColor
+		elseif s.mode == "Paint" then BuildConfig.PaintHighlightColor
+		else BuildConfig.DeleteHighlightColor
 	s.highlight.FillColor = highlightColor
 	s.highlight.OutlineColor = highlightColor
 	syncSize(s)
@@ -4738,6 +5246,51 @@ end
 local function tryRemove(s: Session, part: Instance?)
 	if part then
 		s.remotes.remove:FireServer(part)
+	end
+end
+
+-- Деталь своего блока под курсором: цель покраски и скрижалей (у модели — отдельная часть).
+local function paintTarget(s: Session, result: RaycastResult?): BasePart?
+	if result and ownBlockFrom(s, result) then
+		return result.Instance
+	end
+	return nil
+end
+
+function describeBrush(): string
+	local brush = PaintMenuController.getBrush()
+	local id = if brush then brush.id else nil
+	if brush and brush.kind == "Erase" then
+		return "Очистить грань: ЛКМ по грани со скрижалью"
+	elseif brush and brush.kind == "Material" and id then
+		local material = PaintCatalog.MaterialById[id]
+		return "Покраска: " .. (if material then material.displayName else id) .. ". ЛКМ по блоку или детали"
+	elseif brush and brush.kind == "Tablet" and id then
+		local tablet = PaintCatalog.TabletById[id]
+		return "Скрижаль «" .. (if tablet then tablet.title else id) .. "». ЛКМ по грани блока"
+	end
+	return "Покраска / Скрижали: выберите материал или скрижаль в меню"
+end
+
+-- ЛКМ в режиме «Покраска / Скрижали»: действие зависит от выбранной в меню кисти.
+local function tryPaint(s: Session)
+	local brush = PaintMenuController.getBrush()
+	if not brush then
+		BuildSettingsController.notify("Сначала выберите материал или скрижаль в меню")
+		return
+	end
+	local result = raycastMouse(s)
+	local part = paintTarget(s, result)
+	if not result or not part then
+		BuildSettingsController.notify("Наведите курсор на свой блок")
+		return
+	end
+	if brush.kind == "Material" then
+		s.remotes.paint:FireServer(part, brush.id)
+	elseif brush.kind == "Tablet" then
+		s.remotes.tablet:FireServer(part, result.Position, result.Normal, brush.id)
+	else
+		s.remotes.erase:FireServer(part, result.Normal)
 	end
 end
 
@@ -4816,6 +5369,8 @@ local function step(dt: number)
 		end
 	elseif s.mode == "Delete" then
 		setHovered(s, ownBlockFrom(s, result))
+	elseif s.mode == "Paint" then
+		setHovered(s, paintTarget(s, result))
 	elseif s.mode == "Move" then
 		-- Подсвечиваем блок, который выберет клик (кроме уже выбранного и пока тянут стрелку).
 		local target = if s.gizmo.isBusy() then nil else ownBlockFrom(s, result)
@@ -4865,9 +5420,16 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	local remove = waitRemote(BuildConfig.RemoveRemoteName)
 	local carve = waitRemote(BuildConfig.CarveRemoteName)
 	local move = waitRemote(BuildConfig.MoveRemoteName)
+	local paint = waitRemote(BuildConfig.PaintRemoteName)
+	local tablet = waitRemote(BuildConfig.TabletRemoteName)
+	local erase = waitRemote(BuildConfig.EraseTabletRemoteName)
 	local notice = waitRemote(BuildConfig.NoticeRemoteName)
 	local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-	if not blocks or not place or not remove or not carve or not move or not notice or not playerGui then
+	if not blocks or not place or not remove or not carve or not move then
+		warn("[BuildController] Не найдены Blocks или RemoteEvent'ы, строительство не включено")
+		return false
+	end
+	if not paint or not tablet or not erase or not notice or not playerGui then
 		warn("[BuildController] Не найдены Blocks или RemoteEvent'ы, строительство не включено")
 		return false
 	end
@@ -4893,7 +5455,16 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	local s: Session = {
 		plot = plot,
 		blocks = blocks,
-		remotes = { place = place, remove = remove, carve = carve, move = move, notice = notice },
+		remotes = {
+			place = place,
+			remove = remove,
+			carve = carve,
+			move = move,
+			paint = paint,
+			tablet = tablet,
+			erase = erase,
+			notice = notice,
+		},
 		previewFolder = previewFolder,
 		ghost = GhostPreview.new(previewFolder),
 		gizmo = MoveGizmo.new(plot, previewFolder, playerGui, {
@@ -4940,6 +5511,14 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	)
 
 	-- Кнопка «Сброс» на панели «Точность»: все углы в 0.
+	-- Смена кисти в меню «Покраска / Скрижали»: обновляем подпись режима.
+	table.insert(
+		s.connections,
+		PaintMenuController.Changed:Connect(function()
+			BuildSettingsController.setMode(describeMode(s))
+		end)
+	)
+
 	-- Смена формы резака или размера на панели: обновляем призрак и подпись режима.
 	table.insert(
 		s.connections,
@@ -5001,6 +5580,8 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 					tryCarve(s)
 				elseif s.mode == "Delete" then
 					tryRemove(s, ownBlockFrom(s, raycastMouse(s)))
+				elseif s.mode == "Paint" then
+					tryPaint(s)
 				elseif s.mode == "Move" then
 					-- Откладываем на такт: клик по стрелке — это перетаскивание, а не смена выбора.
 					task.defer(function()
@@ -6043,7 +6624,8 @@ function MoveGizmo.new(plot: BasePart, previewFolder: Instance, playerGui: Insta
 	local function showAt(d: Drag)
 		local ghost = d.ghost
 		if ghost then
-			ghost:PivotTo(d.startPivot + plot.CFrame:VectorToWorldSpace(d.shown))
+			local target = d.startPivot.Position + plot.CFrame:VectorToWorldSpace(d.shown)
+			BuildGrid.shiftBlock(ghost, target - ghost:GetPivot().Position)
 		end
 		placeProxy(d.center + d.shown, d.extents)
 	end
@@ -6127,6 +6709,389 @@ function MoveGizmo.new(plot: BasePart, previewFolder: Instance, playerGui: Insta
 end
 
 return MoveGizmo
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD51"><Properties><string name="Name">PaintMenuController</string><string name="Source"><![CDATA[--!strict
+-- PaintMenuController: логика меню «Покраска / Скрижали».
+--   * хранит «кисть» — что сделает ЛКМ по блоку: покрасить материалом, повесить скрижаль
+--     или очистить грань от скрижалей;
+--   * BuildHudController открывает и закрывает меню, BuildController читает кисть (getBrush)
+--     и отправляет действие на сервер.
+-- Как и BuildSettingsController, модуль один на клиента: кисть переживает закрытие меню.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
+local PaintMenuView = require(script.Parent.PaintMenuView)
+local Theme = require(script.Parent.Theme)
+
+export type BrushKind = "Material" | "Tablet" | "Erase"
+
+export type Brush = {
+	kind: BrushKind,
+	id: string?, -- id материала или скрижали (у «Очистить грань» — nil)
+}
+
+local HINTS: { [string]: string } = {
+	[PaintMenuView.MaterialsTabId] = "Выберите материал, затем ЛКМ по блоку или детали составного блока",
+	[PaintMenuView.TabletsTabId] = "Выберите скрижаль, затем ЛКМ по грани блока. ★ — скрижаль вашей фракции",
+}
+
+local PaintMenuController = {}
+
+local changed = Instance.new("BindableEvent")
+
+-- Срабатывает при смене кисти.
+PaintMenuController.Changed = changed.Event
+
+local view: PaintMenuView.View? = nil
+local opened = false
+local tabId = PaintMenuView.MaterialsTabId
+local brush: Brush? = nil
+local factionId: string? = nil
+
+local function setStroke(button: GuiObject, selected: boolean)
+	local stroke = button:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		stroke.Color = if selected then Theme.SelectedStroke else Theme.PanelStroke
+		stroke.Thickness = if selected then Theme.StrokeThickness + 2 else Theme.StrokeThickness
+	end
+end
+
+local function isBrush(kind: BrushKind, id: string?): boolean
+	local b = brush
+	return b ~= nil and b.kind == kind and b.id == id
+end
+
+local function refresh()
+	local v = view
+	if not v then
+		return
+	end
+	for id, button in v.tabButtons do
+		setStroke(button, id == tabId)
+	end
+	for id, page in v.pages do
+		page.Visible = id == tabId
+	end
+	v.hintLabel.Text = HINTS[tabId] or ""
+
+	for id, button in v.materialTiles do
+		setStroke(button, isBrush("Material", id))
+	end
+	for _, tablet in PaintCatalog.Tablets do
+		local tile = v.tabletTiles[tablet.id]
+		if tile then
+			local featured = tablet.factionId == factionId
+			tile.star.Visible = featured
+			tile.button.LayoutOrder = if featured then 0 else table.find(PaintCatalog.Tablets, tablet) or 1
+			setStroke(tile.button, isBrush("Tablet", tablet.id))
+		end
+	end
+	setStroke(v.eraseButton, isBrush("Erase", nil))
+end
+
+function PaintMenuController.close()
+	opened = false
+	local v = view
+	if v then
+		v.frame.Visible = false
+	end
+end
+
+function PaintMenuController.open()
+	local v = view
+	if not v or opened then
+		return
+	end
+	opened = true
+	v.frame.Position = PaintMenuView.HiddenPosition
+	v.frame.Visible = true
+	TweenService:Create(v.frame, Theme.TweenInfo, { Position = PaintMenuView.ShownPosition }):Play()
+end
+
+function PaintMenuController.isOpen(): boolean
+	return opened
+end
+
+function PaintMenuController.getBrush(): Brush?
+	return brush
+end
+
+-- Отмечает ★ скрижаль фракции участка и ставит её первой.
+function PaintMenuController.setFaction(value: string?)
+	factionId = value
+	refresh()
+end
+
+-- Выбор кисти закрывает меню: дальше игрок кликает по блокам.
+local function pick(kind: BrushKind, id: string?)
+	brush = { kind = kind, id = id }
+	refresh()
+	PaintMenuController.close()
+	changed:Fire()
+end
+
+-- Создаёт окно внутри ScreenGui строительной панели (один раз).
+function PaintMenuController.attach(gui: ScreenGui)
+	if view then
+		return
+	end
+	local created = PaintMenuView.build(gui)
+	view = created
+
+	for id, button in created.tabButtons do
+		button.Activated:Connect(function()
+			tabId = id
+			refresh()
+		end)
+	end
+	for id, button in created.materialTiles do
+		button.Activated:Connect(function()
+			pick("Material", id)
+		end)
+	end
+	for id, tile in created.tabletTiles do
+		tile.button.Activated:Connect(function()
+			pick("Tablet", id)
+		end)
+	end
+	created.eraseButton.Activated:Connect(function()
+		pick("Erase", nil)
+	end)
+	created.closeButton.Activated:Connect(PaintMenuController.close)
+
+	refresh()
+end
+
+return PaintMenuController
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD52"><Properties><string name="Name">PaintMenuView</string><string name="Source"><![CDATA[--!strict
+-- PaintMenuView: окно «Покраска / Скрижали» над строительной панелью.
+-- Две вкладки: образцы материалов и карточки скрижалей (плюс «Очистить грань»).
+-- Только создаёт GUI; выбор кисти и открытие/закрытие — в PaintMenuController.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
+local Theme = require(script.Parent.Theme)
+local UIFactory = require(script.Parent.UIFactory)
+
+export type TabletTile = {
+	button: TextButton,
+	star: TextLabel, -- ★ скрижаль фракции игрока
+}
+
+export type View = {
+	frame: Frame,
+	closeButton: TextButton,
+	tabButtons: { [string]: TextButton }, -- id вкладки -> кнопка
+	pages: { [string]: Frame }, -- id вкладки -> страница
+	materialTiles: { [string]: TextButton }, -- id материала -> образец
+	tabletTiles: { [string]: TabletTile }, -- id скрижали -> карточка
+	eraseButton: TextButton,
+	hintLabel: TextLabel,
+}
+
+local MENU_SIZE = Vector2.new(680, 330)
+local TAB_SIZE = Vector2.new(210, 30)
+local SWATCH_TILE = Vector2.new(100, 104)
+local TABLET_TILE = Vector2.new(210, 150)
+local GAP = 8
+local PAGE_TOP = 44 + TAB_SIZE.Y + 10
+local HINT_HEIGHT = 22
+
+local PaintMenuView = {}
+
+PaintMenuView.MaterialsTabId = "Materials"
+PaintMenuView.TabletsTabId = "Tablets"
+
+PaintMenuView.Tabs = {
+	{ id = PaintMenuView.MaterialsTabId, label = "Материалы и Цвета" },
+	{ id = PaintMenuView.TabletsTabId, label = "Древние Скрижали" },
+}
+
+-- Над нижней панелью, на месте каталога блоков (одновременно они не открываются).
+PaintMenuView.ShownPosition = UDim2.new(0.5, 0, 1, -136)
+PaintMenuView.HiddenPosition = UDim2.new(0.5, 0, 1, -116)
+
+local function fitText(label: TextLabel, maxTextSize: number)
+	label.TextScaled = true
+	local constraint = Instance.new("UITextSizeConstraint")
+	constraint.MaxTextSize = maxTextSize
+	constraint.Parent = label
+end
+
+local function horizontalRow(name: string, parent: Instance): Frame
+	local row = Instance.new("Frame")
+	row.Name = name
+	row.BackgroundTransparency = 1
+	row.Parent = parent
+
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, GAP)
+	layout.Parent = row
+	return row
+end
+
+local function buildSwatch(material: PaintCatalog.Material, order: number, parent: Instance): TextButton
+	local button = UIFactory.button(material.id .. "Swatch", "", Theme.SecondaryButtonColor, parent)
+	button.Size = UDim2.fromOffset(SWATCH_TILE.X, SWATCH_TILE.Y)
+	button.LayoutOrder = order
+
+	local sample = Instance.new("Frame")
+	sample.Name = "Sample"
+	sample.Position = UDim2.fromOffset(10, 10)
+	sample.Size = UDim2.new(1, -20, 0, 56)
+	sample.BackgroundColor3 = material.color
+	sample.BorderSizePixel = 0
+	sample.Parent = button
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = Theme.CornerRadius
+	corner.Parent = sample
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Theme.PanelStroke
+	stroke.Thickness = 1
+	stroke.Parent = sample
+
+	local name = UIFactory.label("SwatchName", material.displayName, 18, button)
+	name.Position = UDim2.fromOffset(6, 70)
+	name.Size = UDim2.new(1, -12, 0, 26)
+	fitText(name, 19)
+	return button
+end
+
+local function buildTabletTile(tablet: PaintCatalog.Tablet, order: number, parent: Instance): TabletTile
+	local button = UIFactory.button(tablet.id .. "Tablet", "", Theme.SecondaryButtonColor, parent)
+	button.Size = UDim2.fromOffset(TABLET_TILE.X, TABLET_TILE.Y)
+	button.LayoutOrder = order
+
+	local title = UIFactory.label("TabletTitle", tablet.title, 18, button)
+	title.Position = UDim2.fromOffset(8, 8)
+	title.Size = UDim2.new(1, -16, 0, 26)
+	fitText(title, 19)
+
+	local faction = UIFactory.label("TabletFaction", tablet.factionName, 14, button)
+	faction.Font = Theme.BodyFont
+	faction.TextColor3 = Theme.PanelStroke
+	faction.Position = UDim2.fromOffset(8, 34)
+	faction.Size = UDim2.new(1, -16, 0, 18)
+
+	local excerpt = UIFactory.label("TabletText", "«" .. tablet.text .. "»", 13, button)
+	excerpt.Font = Theme.BodyFont
+	excerpt.TextColor3 = Theme.SubTextColor
+	excerpt.TextYAlignment = Enum.TextYAlignment.Top
+	excerpt.Position = UDim2.fromOffset(8, 56)
+	excerpt.Size = UDim2.new(1, -16, 1, -64)
+	fitText(excerpt, 14)
+
+	local star = UIFactory.label("Featured", "★", 16, button)
+	star.AnchorPoint = Vector2.new(1, 0)
+	star.Position = UDim2.new(1, -4, 0, 2)
+	star.Size = UDim2.fromOffset(18, 18)
+	star.TextColor3 = Theme.PanelStroke
+	star.Visible = false
+
+	return { button = button, star = star }
+end
+
+function PaintMenuView.build(gui: ScreenGui): View
+	local frame = UIFactory.panel("PaintMenu", UDim2.fromOffset(MENU_SIZE.X, MENU_SIZE.Y), gui)
+	frame.AnchorPoint = Vector2.new(0.5, 1)
+	frame.Position = PaintMenuView.HiddenPosition
+	frame.Active = true -- клики по фону меню не уходят в мир
+	frame.Visible = false
+
+	local title = UIFactory.label("Title", "Покраска и скрижали", 22, frame)
+	title.Position = UDim2.fromOffset(14, 8)
+	title.Size = UDim2.new(0.6, 0, 0, 28)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+
+	local closeButton = UIFactory.button("Close", "✕", Theme.SecondaryButtonColor, frame)
+	closeButton.AnchorPoint = Vector2.new(1, 0)
+	closeButton.Position = UDim2.new(1, -10, 0, 8)
+	closeButton.Size = UDim2.fromOffset(32, 30)
+
+	-- Вкладки.
+	local tabsRow = horizontalRow("Tabs", frame)
+	tabsRow.Position = UDim2.fromOffset(12, 44)
+	tabsRow.Size = UDim2.new(1, -24, 0, TAB_SIZE.Y)
+	local tabsLayout = tabsRow:FindFirstChildOfClass("UIListLayout")
+	if tabsLayout then
+		tabsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+	end
+
+	local tabButtons: { [string]: TextButton } = {}
+	local pages: { [string]: Frame } = {}
+	for index, tab in PaintMenuView.Tabs do
+		local button = UIFactory.button(tab.id .. "Tab", tab.label, Theme.SecondaryButtonColor, tabsRow)
+		button.Size = UDim2.fromOffset(TAB_SIZE.X, TAB_SIZE.Y)
+		button.LayoutOrder = index
+		button.TextSize = 16
+		tabButtons[tab.id] = button
+
+		local page = Instance.new("Frame")
+		page.Name = tab.id .. "Page"
+		page.BackgroundTransparency = 1
+		page.Position = UDim2.fromOffset(12, PAGE_TOP)
+		page.Size = UDim2.new(1, -24, 1, -(PAGE_TOP + HINT_HEIGHT + 12))
+		page.Visible = false
+		page.Parent = frame
+		pages[tab.id] = page
+	end
+
+	-- Страница материалов: ряд образцов.
+	local swatchRow = horizontalRow("Swatches", pages[PaintMenuView.MaterialsTabId])
+	swatchRow.Position = UDim2.fromOffset(0, 24)
+	swatchRow.Size = UDim2.new(1, 0, 0, SWATCH_TILE.Y)
+
+	local materialTiles: { [string]: TextButton } = {}
+	for index, material in PaintCatalog.Materials do
+		materialTiles[material.id] = buildSwatch(material, index, swatchRow)
+	end
+
+	-- Страница скрижалей: карточки и «Очистить грань» под ними.
+	local tabletsPage = pages[PaintMenuView.TabletsTabId]
+	local tabletRow = horizontalRow("Tablets", tabletsPage)
+	tabletRow.Size = UDim2.new(1, 0, 0, TABLET_TILE.Y)
+
+	local tabletTiles: { [string]: TabletTile } = {}
+	for index, tablet in PaintCatalog.Tablets do
+		tabletTiles[tablet.id] = buildTabletTile(tablet, index, tabletRow)
+	end
+
+	local eraseButton = UIFactory.button("ErasePlaque", "Очистить грань", Theme.PrimaryButtonColor, tabletsPage)
+	eraseButton.TextSize = 18
+	eraseButton.AnchorPoint = Vector2.new(0.5, 1)
+	eraseButton.Position = UDim2.new(0.5, 0, 1, 0)
+	eraseButton.Size = UDim2.fromOffset(240, 34)
+
+	local hintLabel = UIFactory.label("Hint", "", 15, frame)
+	hintLabel.Font = Theme.BodyFont
+	hintLabel.TextColor3 = Theme.SubTextColor
+	hintLabel.AnchorPoint = Vector2.new(0.5, 1)
+	hintLabel.Position = UDim2.new(0.5, 0, 1, -8)
+	hintLabel.Size = UDim2.new(1, -24, 0, HINT_HEIGHT)
+	fitText(hintLabel, 15)
+
+	return {
+		frame = frame,
+		closeButton = closeButton,
+		tabButtons = tabButtons,
+		pages = pages,
+		materialTiles = materialTiles,
+		tabletTiles = tabletTiles,
+		eraseButton = eraseButton,
+		hintLabel = hintLabel,
+	}
+end
+
+return PaintMenuView
 ]]></string></Properties></Item>
 </Item>
       </Item>

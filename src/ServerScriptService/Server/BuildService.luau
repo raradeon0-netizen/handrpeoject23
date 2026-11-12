@@ -13,11 +13,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
 local BuildSize = require(ReplicatedStorage.Shared.BuildSize)
+local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
 
 local PlotOwnership = require(script.Parent.PlotOwnership)
 local BlockFactory = require(script.Parent.BlockFactory)
 local BlockCarver = require(script.Parent.BlockCarver)
 local BlockMover = require(script.Parent.BlockMover)
+local BlockPainter = require(script.Parent.BlockPainter)
+local TabletFactory = require(script.Parent.TabletFactory)
 
 -- Шаг 1. RemoteEvent'ы для клиента.
 local function makeRemote(name: string): RemoteEvent
@@ -31,6 +34,9 @@ local placeRemote = makeRemote(BuildConfig.PlaceRemoteName)
 local removeRemote = makeRemote(BuildConfig.RemoveRemoteName)
 local carveRemote = makeRemote(BuildConfig.CarveRemoteName)
 local moveRemote = makeRemote(BuildConfig.MoveRemoteName)
+local paintRemote = makeRemote(BuildConfig.PaintRemoteName)
+local tabletRemote = makeRemote(BuildConfig.TabletRemoteName)
+local eraseRemote = makeRemote(BuildConfig.EraseTabletRemoteName)
 local noticeRemote = makeRemote(BuildConfig.NoticeRemoteName)
 
 type ShapeRequest = {
@@ -315,6 +321,87 @@ moveRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown, loca
 	local moved, reason = BlockMover.move(claim.plot, target, localOffset)
 	if not moved and reason then
 		notify(player, reason)
+	end
+end)
+
+-- Полезная цель покраски / скрижали: деталь своего блока (сама скрижаль целью не считается).
+local function findOwnPart(player: Player, clicked: unknown): (BasePart?, PlotOwnership.Claim?)
+	if typeof(clicked) ~= "Instance" or not clicked:IsA("BasePart") then
+		return nil, nil
+	end
+	if clicked:GetAttribute(BuildConfig.Attributes.TabletId) ~= nil then
+		return nil, nil
+	end
+	local block, claim = findOwnBlock(player, clicked)
+	if not block or not claim then
+		return nil, nil
+	end
+	return clicked, claim
+end
+
+-- Покраска: клиент присылает деталь, по которой кликнул, и id материала из PaintCatalog.
+paintRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown, materialId: unknown)
+	if typeof(materialId) ~= "string" then
+		return
+	end
+	local material = PaintCatalog.MaterialById[materialId]
+	if not material or not cooldownPassed(player, "paint", BuildConfig.PaintCooldown) then
+		return
+	end
+	local part = findOwnPart(player, clicked)
+	if part then
+		BlockPainter.paint(part, material)
+	end
+end)
+
+-- Скрижаль: деталь, точка и нормаль попадания луча, id скрижали.
+tabletRemote.OnServerEvent:Connect(
+	function(player: Player, clicked: unknown, hitPos: unknown, hitNormal: unknown, tabletId: unknown)
+		if typeof(hitPos) ~= "Vector3" or typeof(hitNormal) ~= "Vector3" or typeof(tabletId) ~= "string" then
+			return
+		end
+		local tablet = PaintCatalog.TabletById[tabletId]
+		if not tablet or not isFiniteVector(hitPos) or not isFiniteVector(hitNormal) then
+			return
+		end
+		if math.abs(hitNormal.Magnitude - 1) > 0.01 then
+			return
+		end
+		if not cooldownPassed(player, "tablet", BuildConfig.TabletCooldown) then
+			return
+		end
+		local part, claim = findOwnPart(player, clicked)
+		if not part or not claim or not PlotOwnership.canBuildAt(player, hitPos) then
+			return
+		end
+		-- Точка должна лежать на самой детали, а не где-то в стороне от неё.
+		local offset = part.CFrame:PointToObjectSpace(hitPos)
+		local reach = part.Size / 2 + Vector3.one * 0.5
+		if math.abs(offset.X) > reach.X or math.abs(offset.Y) > reach.Y or math.abs(offset.Z) > reach.Z then
+			return
+		end
+		if TabletFactory.count(getBlocksFolder(claim.plot)) >= BuildConfig.MaxTabletsPerPlayer then
+			notify(player, string.format("Достигнут лимит: %d скрижалей", BuildConfig.MaxTabletsPerPlayer))
+			return
+		end
+		TabletFactory.place(claim.plot, part, hitPos, hitNormal, tablet)
+	end
+)
+
+-- «Очистить грань»: снять скрижали с грани, по которой кликнули.
+eraseRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown, hitNormal: unknown)
+	if typeof(hitNormal) ~= "Vector3" or not isFiniteVector(hitNormal) then
+		return
+	end
+	if math.abs(hitNormal.Magnitude - 1) > 0.01 then
+		return
+	end
+	if not cooldownPassed(player, "erase", BuildConfig.PaintCooldown) then
+		return
+	end
+	local part = findOwnPart(player, clicked)
+	if part and TabletFactory.erase(part, hitNormal) == 0 then
+		notify(player, "На этой грани нет скрижалей")
 	end
 end)
 

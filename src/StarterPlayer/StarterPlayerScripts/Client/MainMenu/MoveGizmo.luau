@@ -228,7 +228,8 @@ function MoveGizmo.new(plot: BasePart, previewFolder: Instance, playerGui: Insta
 	local function showAt(d: Drag)
 		local ghost = d.ghost
 		if ghost then
-			ghost:PivotTo(d.startPivot + plot.CFrame:VectorToWorldSpace(d.shown))
+			local target = d.startPivot.Position + plot.CFrame:VectorToWorldSpace(d.shown)
+			BuildGrid.shiftBlock(ghost, target - ghost:GetPivot().Position)
 		end
 		placeProxy(d.center + d.shown, d.extents)
 	end
