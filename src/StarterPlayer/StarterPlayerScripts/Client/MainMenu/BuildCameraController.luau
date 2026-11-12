@@ -83,6 +83,11 @@ local BuildCameraController = {}
 
 local session: Session? = nil
 
+-- Короткая тряска камеры (тяжёлый удар блока): размах в студах и сколько секунд осталось.
+local shakeStrength = 0
+local shakeLeft = 0
+local shakeLength = 0
+
 -- ===== Математика =====
 
 -- Критически демпфированная пружина (как SmoothDamp в Unity): без перелёта и рывков.
@@ -199,7 +204,17 @@ local function step(dt: number)
 
 	-- Шаг 3. Применяем к камере (позиция дополнительно зажата границами).
 	s.pos = clampToBounds(s, s.pos)
-	s.camera.CFrame = CFrame.new(s.pos) * CFrame.fromOrientation(s.pitch, s.yaw, 0)
+	local cframe = CFrame.new(s.pos) * CFrame.fromOrientation(s.pitch, s.yaw, 0)
+
+	-- Шаг 4. Тряска: случайный сдвиг в плоскости экрана, быстро затухающий. Само положение
+	-- камеры (s.pos) не меняется, поэтому после тряски она стоит ровно там же.
+	if shakeLeft > 0 then
+		shakeLeft -= dt
+		local fade = math.max(shakeLeft, 0) / shakeLength
+		local reach = shakeStrength * fade * fade
+		cframe *= CFrame.new((math.random() - 0.5) * 2 * reach, (math.random() - 0.5) * 2 * reach, 0)
+	end
+	s.camera.CFrame = cframe
 end
 
 -- ===== Публичный API =====
@@ -219,6 +234,17 @@ function BuildCameraController.stop()
 	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 	s.camera.CameraType = Enum.CameraType.Custom
 	setCharacterControls(true)
+end
+
+-- Встряхивает камеру: strength — размах в студах, duration — длительность в секундах.
+-- Более слабый толчок не перебивает ещё не затихший сильный.
+function BuildCameraController.shake(strength: number, duration: number)
+	local remaining = if shakeLength > 0 then shakeStrength * math.max(shakeLeft, 0) / shakeLength else 0
+	if strength >= remaining and duration > 0 then
+		shakeStrength = strength
+		shakeLeft = duration
+		shakeLength = duration
+	end
 end
 
 function BuildCameraController.isActive(): boolean

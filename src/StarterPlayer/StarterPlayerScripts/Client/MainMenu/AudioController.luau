@@ -24,6 +24,13 @@ local VOLUME_STEP = 0.1
 local FADE = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local FADE_IN = TweenInfo.new(2.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
+-- Особая подача звука: свой диапазон высоты тона и множитель громкости
+-- (например, низкий и громкий удар в режиме анимаций «Мощная»).
+export type SfxStyle = {
+	pitch: NumberRange,
+	gain: number,
+}
+
 local AudioController = {}
 
 AudioController.VolumeStep = VOLUME_STEP
@@ -99,7 +106,7 @@ function AudioController.setMuted(value: boolean)
 end
 
 -- Проигрывает звуковой эффект по имени из таблицы SFX (если эффекты не выключены в настройках).
-function AudioController.playSfx(name: string)
+function AudioController.playSfx(name: string, style: SfxStyle?)
 	local spec = SFX[name]
 	if not sfxEnabled or not spec then
 		return
@@ -114,7 +121,10 @@ function AudioController.playSfx(name: string)
 		sfxSounds[name] = created
 		effect = created
 	end
-	effect.PlaybackSpeed = PITCH_MIN + math.random() * (PITCH_MAX - PITCH_MIN)
+	local low = if style then style.pitch.Min else PITCH_MIN
+	local high = if style then style.pitch.Max else PITCH_MAX
+	effect.PlaybackSpeed = low + math.random() * (high - low)
+	effect.Volume = spec.volume * (if style then style.gain else 1)
 	SoundService:PlayLocalSound(effect) -- играет копию: звуки могут накладываться друг на друга
 end
 

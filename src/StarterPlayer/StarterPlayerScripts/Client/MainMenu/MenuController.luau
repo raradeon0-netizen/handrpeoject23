@@ -152,9 +152,10 @@ function MenuController.start(playerGui: PlayerGui)
 	-- ===== Звуки и анимации стройки (окно «Настройки») =====
 	local function refreshToggles()
 		local sfxOn = AudioController.isSfxEnabled()
-		local animationsOn = BuildEffects.isEnabled()
+		local animationMode = BuildEffects.getMode()
+		local animationsOn = animationMode ~= "Off"
 		view.sfxButton.Text = "Звуки стройки (SFX): " .. (if sfxOn then "Вкл" else "Выкл")
-		view.animationButton.Text = "Анимации стройки: " .. (if animationsOn then "Вкл" else "Выкл")
+		view.animationButton.Text = "Анимации стройки: " .. BuildEffects.modeLabel(animationMode)
 		for button, on in { [view.sfxButton] = sfxOn, [view.animationButton] = animationsOn } do
 			local stroke = button:FindFirstChildOfClass("UIStroke")
 			if stroke then
@@ -168,7 +169,7 @@ function MenuController.start(playerGui: PlayerGui)
 		refreshToggles()
 	end)
 	view.animationButton.Activated:Connect(function()
-		BuildEffects.setEnabled(not BuildEffects.isEnabled())
+		BuildEffects.cycleMode() -- «Выкл» -> «Обычная» -> «Мощная»
 		refreshToggles()
 	end)
 	refreshToggles()

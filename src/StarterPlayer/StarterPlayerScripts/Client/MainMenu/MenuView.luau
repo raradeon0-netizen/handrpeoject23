@@ -26,7 +26,7 @@ export type View = {
 	volumeFill: Frame, -- заполнение шкалы громкости
 	muteButton: TextButton,
 	sfxButton: TextButton, -- «Звуки стройки (SFX): Вкл / Выкл»
-	animationButton: TextButton, -- «Анимации стройки: Вкл / Выкл»
+	animationButton: TextButton, -- «Анимации стройки: Выкл / Обычная / Мощная»
 	pauseScreen: Frame, -- меню паузы (во время игры)
 	resumeButton: TextButton,
 	pauseSettingsButton: TextButton,
