@@ -176,6 +176,9 @@ function TopHudController.setWalkMode(walking: boolean)
 	local v = view
 	if v then
 		v.walkButton.Text = if walking then "Режим: Прогулка (V)" else "Режим: Стройка (V)"
+		if walking then
+			showStatus("info", "Прогулка от первого лица. Alt — освободить курсор, V — вернуться к стройке")
+		end
 		setSelected(v.walkButton, walking)
 	end
 end

@@ -5592,6 +5592,8 @@ function MenuController.start(playerGui: PlayerGui)
 		view.pauseScreen.Visible = state == "Pause"
 		-- Пока открыто любое окно меню, редактор не реагирует на клавиши и клики.
 		BuildController.setPaused(state ~= "Closed")
+		-- На прогулке курсор заперт в центре: при открытом меню он свободен.
+		WalkController.setCursorFree("menu", state ~= "Closed")
 		view.titleScreen.Visible = state == "Title"
 		view.factionScreen.Visible = state == "FactionSelect"
 		view.settingsScreen.Visible = state == "Settings"
@@ -9888,6 +9890,9 @@ function TopHudController.setWalkMode(walking: boolean)
 	local v = view
 	if v then
 		v.walkButton.Text = if walking then "Режим: Прогулка (V)" else "Режим: Стройка (V)"
+		if walking then
+			showStatus("info", "Прогулка от первого лица. Alt — освободить курсор, V — вернуться к стройке")
+		end
 		setSelected(v.walkButton, walking)
 	end
 end
@@ -10889,13 +10894,17 @@ return FootstepController
 <Item class="ModuleScript" referent="RBXBUILD65"><Properties><string name="Name">WalkController</string><string name="Source"><![CDATA[--!strict
 -- WalkController (клиент): переключение между стройкой и прогулкой по своему участку.
 --   «Прогулка»: сервер показывает персонажа и ставит его на свободное место у края плиты;
---   свободная камера выключается, управление возвращается персонажу, нижняя панель и панель
+--   свободная камера выключается, камера запирается в виде от первого лица (голова и
+--   аксессуары персонажа при этом скрыты самим Roblox), нижняя панель и панель
 --   «Точность» прячутся; включаются бег, покачивание камеры (WalkMotion) и шаги (FootstepController).
 --   «Стройка»: сервер снова прячет персонажа, возвращаются свободная камера и панели.
+--   Курсор в виде от первого лица заперт в центре; он освобождается, пока открыто меню
+--   паузы или настройки и пока зажат Alt — так можно нажать кнопки верхней панели.
 -- Кнопку в верхней панели и клавишу V подключает MenuController.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 local BuildCameraController = require(script.Parent.BuildCameraController)
@@ -10922,6 +10931,110 @@ local walking = false
 local busy = false
 local plot: Part? = nil
 local respawnConnection: RBXScriptConnection? = nil
+
+-- ===== Вид от первого лица и курсор =====
+-- На прогулке камера заперта в виде от первого лица, а курсор — в центре экрана. Чтобы нажать
+-- кнопку интерфейса, курсор освобождается: пока открыто меню (причина "menu") или зажат Alt
+-- (причина "alt"). Освобождает его видимая кнопка с Modal = true — штатный способ Roblox,
+-- который стандартная камера не перебивает; MouseBehavior выставляется вдобавок к ней.
+
+local CURSOR_KEYS: { [Enum.KeyCode]: boolean } = {
+	[Enum.KeyCode.LeftAlt] = true,
+	[Enum.KeyCode.RightAlt] = true,
+}
+
+local freeReasons: { [string]: boolean? } = {}
+local modalButton: TextButton? = nil
+local cursorConnections: { RBXScriptConnection } = {}
+local savedMaxZoom: number? = nil
+
+local function getModalButton(): TextButton
+	local existing = modalButton
+	if existing then
+		return existing
+	end
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "WalkCursor"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 1
+	local button = Instance.new("TextButton")
+	button.Name = "Modal"
+	button.Text = ""
+	button.BackgroundTransparency = 1
+	button.Size = UDim2.fromOffset(1, 1)
+	button.Position = UDim2.fromOffset(-10, -10) -- за краем экрана: ничего не заслоняет и не ловит клики
+	button.Modal = true
+	button.Visible = false
+	button.Parent = gui
+	gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+	modalButton = button
+	return button
+end
+
+local function applyCursor()
+	local free = walking and next(freeReasons) ~= nil
+	getModalButton().Visible = free
+	if walking then
+		UserInputService.MouseBehavior = if free then Enum.MouseBehavior.Default else Enum.MouseBehavior.LockCenter
+	end
+end
+
+-- Освобождает или снова запирает курсор по названной причине. Действует только на прогулке;
+-- причина "menu" запоминается и вне её, чтобы прогулка началась с правильным состоянием.
+function WalkController.setCursorFree(reason: string, free: boolean)
+	freeReasons[reason] = if free then true else nil
+	applyCursor()
+end
+
+-- Запирает камеру в виде от первого лица или возвращает обычную.
+local function setFirstPerson(locked: boolean)
+	local player = Players.LocalPlayer
+	local ok = pcall(function()
+		player.CameraMode = if locked then Enum.CameraMode.LockFirstPerson else Enum.CameraMode.Classic
+	end)
+	-- Запасной путь, если режим камеры менять нельзя: не даём отдалить камеру от глаз.
+	if not ok and locked then
+		savedMaxZoom = player.CameraMaxZoomDistance
+		player.CameraMaxZoomDistance = player.CameraMinZoomDistance
+	elseif not locked and savedMaxZoom then
+		player.CameraMaxZoomDistance = savedMaxZoom
+		savedMaxZoom = nil
+	end
+end
+
+local function watchCursorKeys()
+	table.insert(
+		cursorConnections,
+		UserInputService.InputBegan:Connect(function(input: InputObject)
+			if CURSOR_KEYS[input.KeyCode] then
+				WalkController.setCursorFree("alt", true)
+			end
+		end)
+	)
+	table.insert(
+		cursorConnections,
+		UserInputService.InputEnded:Connect(function(input: InputObject)
+			if CURSOR_KEYS[input.KeyCode] then
+				WalkController.setCursorFree("alt", false)
+			end
+		end)
+	)
+	-- Окно потеряло фокус с зажатым Alt (Alt+Tab): отпускание клавиши до игры не дойдёт.
+	table.insert(
+		cursorConnections,
+		UserInputService.WindowFocusReleased:Connect(function()
+			WalkController.setCursorFree("alt", false)
+		end)
+	)
+end
+
+local function unwatchCursorKeys()
+	for _, connection in cursorConnections do
+		connection:Disconnect()
+	end
+	table.clear(cursorConnections)
+	freeReasons.alt = nil
+end
 
 function WalkController.isWalking(): boolean
 	return walking
@@ -10987,6 +11100,9 @@ function WalkController.enter(toolbar: Toolbar): boolean
 	BuildSettingsController.hide()
 	toolbar.setToolbarVisible(false)
 	BuildCameraController.stop() -- возвращает обычную камеру и управление персонажем
+	setFirstPerson(true)
+	watchCursorKeys()
+	applyCursor()
 
 	local player = Players.LocalPlayer
 	if player.Character then
@@ -11007,9 +11123,14 @@ function WalkController.leave(toolbar: Toolbar, quiet: boolean?)
 	end
 	busy = true
 	detach()
+	-- Обычный режим камеры возвращаем до свободной камеры стройки; курсор снова свободен.
+	setFirstPerson(false)
+	unwatchCursorKeys()
 	request(false) -- сервер прячет персонажа и ставит его в центр плиты
 
 	walking = false
+	applyCursor() -- прячет модальную кнопку
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 	toolbar.setToolbarVisible(true)
 	BuildController.setWalking(false)
 	local currentPlot = plot
@@ -11037,7 +11158,7 @@ return WalkController
 -- WalkMotion (клиент): ощущение движения пешком в режиме прогулки.
 --   * бег при зажатом LeftShift: скорость 16 -> 24 и плавное расширение поля зрения;
 --   * лёгкое покачивание камеры в такт шагам (Humanoid.CameraOffset — работает и от третьего,
---     и от первого лица, не мешая стандартной камере и приближению колесом мыши).
+--     и от первого лица, не мешая стандартной камере).
 
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")

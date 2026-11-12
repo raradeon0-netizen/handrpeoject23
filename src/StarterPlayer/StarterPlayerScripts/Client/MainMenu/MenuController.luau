@@ -51,6 +51,8 @@ function MenuController.start(playerGui: PlayerGui)
 		view.pauseScreen.Visible = state == "Pause"
 		-- Пока открыто любое окно меню, редактор не реагирует на клавиши и клики.
 		BuildController.setPaused(state ~= "Closed")
+		-- На прогулке курсор заперт в центре: при открытом меню он свободен.
+		WalkController.setCursorFree("menu", state ~= "Closed")
 		view.titleScreen.Visible = state == "Title"
 		view.factionScreen.Visible = state == "FactionSelect"
 		view.settingsScreen.Visible = state == "Settings"
