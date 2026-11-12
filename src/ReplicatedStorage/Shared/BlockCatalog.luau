@@ -30,6 +30,7 @@ BlockCatalog.Categories = {
 	{ id = "Stairs", label = "Ступени" },
 	{ id = "Roofs", label = "Крыши" },
 	{ id = "Decor", label = "Декор" },
+	{ id = "Lighting", label = "Освещение" },
 } :: { Category }
 
 BlockCatalog.List = {
@@ -171,6 +172,28 @@ BlockCatalog.List = {
 		displayName = "Обелиск",
 		description = "Золотой пирамидион",
 		category = "Decor",
+		featured = { "Egypt" },
+	},
+
+	-- Освещение: светильники с тёплым светом и пламенем
+	{
+		id = "WallTorch",
+		displayName = "Настенный факел",
+		description = "Вешается на стену",
+		category = "Lighting",
+	},
+	{
+		id = "Brazier",
+		displayName = "Храмовая жаровня",
+		description = "Треножник с углями",
+		category = "Lighting",
+		featured = { "Greece", "Rome" },
+	},
+	{
+		id = "ObeliskLamp",
+		displayName = "Египетский обелиск-светильник",
+		description = "Сияющий кристалл 4×12×4",
+		category = "Lighting",
 		featured = { "Egypt" },
 	},
 } :: { Entry }

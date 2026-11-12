@@ -15,7 +15,7 @@ local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BlockLibrary = require(ReplicatedStorage.Shared.BlockLibrary)
 
 export type Ghost = {
-	setShape: (shapeId: string, factionId: string?, size: Vector3?) -> (), -- size — свой размер базовой формы
+	setShape: (shapeId: string, factionId: string?, size: Vector3?) -> (), -- size — свой размер формы
 	update: (target: CFrame, color: Color3, dt: number) -> (),
 	hide: () -> (),
 	destroy: () -> (),
@@ -72,13 +72,10 @@ function GhostPreview.new(parent: Instance): Ghost
 		table.clear(pieces)
 
 		local shape = BuildConfig.Shapes[shapeId]
-		local specs = BlockLibrary.getPieces(shapeId, factionId)
-		if shape and size and not shape.prefab then
-			-- Базовая форма своего размера (в том числе тонкая полоса резака): один бокс.
-			bounds.Size = size
-			specs = { { kind = "Block", role = "Main", size = size, cframe = CFrame.identity } }
-		elseif shape then
-			bounds.Size = shape.size
+		-- Свой размер: базовая форма — один бокс, составная — пропорционально растянутые детали.
+		local specs = BlockLibrary.getPieces(shapeId, factionId, size)
+		if shape then
+			bounds.Size = size or shape.size
 		end
 		local base = bounds.CFrame
 		for _, spec in specs do

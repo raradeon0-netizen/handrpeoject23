@@ -22,6 +22,7 @@
 --   Accent — золото (бронза), Detail — цветная вставка (бирюза Египта, порфир Рима, синь Греции).
 
 local BuildConfig = require(script.Parent.BuildConfig)
+local LightEffects = require(script.Parent.LightEffects)
 
 export type Role = "Main" | "Trim" | "Accent" | "Detail"
 export type PieceKind = "Block" | "Wedge" | "CornerWedge" | "Cylinder"
@@ -34,6 +35,7 @@ export type Piece = {
 	shade: number?, -- множитель яркости цвета роли (оттенки отдельных камней)
 	material: Enum.Material?, -- свой материал вместо материала роли
 	color: Color3?, -- свой цвет вместо цвета роли
+	effect: string?, -- id эффекта светильника из LightEffects (свет, пламя, искры)
 }
 
 export type Box = {
@@ -561,7 +563,7 @@ local function ornateCube(_factionId: string?): { Piece }
 end
 
 -- ===== Каменная кладка: стены и дороги =====
--- Геометрию этих префабов проверяет tools/masonry.py check (границы формы и совпадающие грани).
+-- Геометрию этих префабов проверяет tools/prefabs.py check (границы формы и совпадающие грани).
 
 local BRICK_SHADES = { 1, 0.93, 1.05, 0.97 }
 
@@ -704,7 +706,117 @@ local function ruinWall(_factionId: string?): { Piece }
 	return list
 end
 
+-- ===== Освещение =====
+-- Светящаяся деталь несёт effect — по нему LightEffects вешает свет, пламя и искры.
+-- Геометрию проверяет tools/prefabs.py check.
+
+local IRON = Color3.fromRGB(58, 54, 52)
+local BRONZE = Color3.fromRGB(140, 98, 52)
+local WOOD = Color3.fromRGB(96, 62, 36)
+local CHARRED = Color3.fromRGB(44, 32, 28)
+local EMBER = Color3.fromRGB(255, 140, 50)
+local CRYSTAL = Color3.fromRGB(255, 205, 90)
+
+-- Меняет вид последней добавленной детали: свой материал, цвет и эффект светильника.
+local function restyle(list: { Piece }, material: Enum.Material?, color: Color3?, effect: string?)
+	local piece = list[#list]
+	piece.material = material
+	piece.color = color
+	piece.effect = effect
+end
+
+-- Настенный факел 1x4x2: бронзовая пластина прижата к стене (сторона -Z), от неё идёт
+-- железный кронштейн с чашей, в котором стоит наклонённая от стены деревянная рукоять с углями.
+local function wallTorch(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	stone(list, "Trim", Vector3.new(1, 2, 0.2), CFrame.new(0, -1, -0.9), nil, Enum.Material.Metal, BRONZE)
+	block(list, "Accent", 0.3, 0.12, 0.08, 0, -0.3, -0.77) -- заклёпки пластины
+	block(list, "Accent", 0.3, 0.12, 0.08, 0, -1.7, -0.77)
+	stone(list, "Trim", Vector3.new(0.2, 0.2, 0.7), CFrame.new(0, -0.9, -0.45), nil, Enum.Material.Metal, IRON)
+
+	local handle = CFrame.new(0, 0, 0.1) * CFrame.Angles(math.rad(20), 0, 0)
+	stone(list, "Main", Vector3.new(0.3, 2.4, 0.3), handle, nil, Enum.Material.Wood, WOOD)
+	stone(list, "Trim", Vector3.new(0.45, 0.2, 0.45), handle * CFrame.new(0, -0.958, 0), nil, Enum.Material.Metal, IRON)
+	stone(list, "Trim", Vector3.new(0.9, 0.12, 0.9), CFrame.new(0, 1.05, 0.55), nil, Enum.Material.Metal, IRON) -- чаша
+	stone(list, "Main", Vector3.new(0.5, 0.6, 0.5), handle * CFrame.new(0, 1.4, 0), nil, Enum.Material.Fabric, CHARRED)
+	stone(list, "Accent", Vector3.new(0.36, 0.25, 0.36), handle * CFrame.new(0, 1.8, 0), nil, Enum.Material.Neon, EMBER)
+	restyle(list, Enum.Material.Neon, EMBER, "Torch")
+	return list
+end
+
+-- Храмовая жаровня 4x4x4: каменное основание, золотой треножник и чаша с тлеющими углями.
+local function brazier(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	block(list, "Trim", 4, 0.5, 4, 0, -1.75, 0)
+	block(list, "Main", 2.4, 0.4, 2.4, 0, -1.3, 0)
+
+	for k = 0, 2 do
+		local angle = math.rad(90 + 120 * k)
+		local x, z = 0.75 * math.cos(angle), 0.75 * math.sin(angle)
+		-- Ножка наклонена верхом к центру чаши.
+		add(
+			list,
+			"Block",
+			"Accent",
+			Vector3.new(0.22, 2.3, 0.22),
+			CFrame.new(x, -0.05, z) * CFrame.Angles(0, math.atan2(-x, -z), 0) * CFrame.Angles(math.rad(10), 0, 0)
+		)
+		-- Куски угля поверх тлеющего слоя.
+		stone(
+			list,
+			"Main",
+			Vector3.new(0.45, 0.26, 0.45),
+			CFrame.new(-0.8 * x, 1.76, -0.8 * z)
+				* CFrame.Angles(0, math.rad(40 * k), 0)
+				* CFrame.Angles(math.rad(12), 0, math.rad(-9)),
+			nil,
+			Enum.Material.Slate,
+			CHARRED
+		)
+	end
+
+	cylinder(list, "Accent", 1.5, 0.12, 0, -0.4, 0) -- обруч между ножками
+	cylinder(list, "Trim", 2.2, 0.4, 0, 0.9, 0) -- дно чаши
+	cylinder(list, "Accent", 3, 0.5, 0, 1.35, 0) -- золотой борт
+	cylinder(list, "Accent", 2.5, 0.2, 0, 1.62, 0) -- тлеющие угли
+	restyle(list, Enum.Material.Neon, EMBER, "Brazier")
+	return list
+end
+
+-- Обелиск-светильник 4x12x4: ступенчатый резной столб с золотыми поясами и цветными
+-- панелями, наверху — золотая чаша с сияющим кристаллом.
+local function obeliskLamp(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	block(list, "Trim", 4, 1, 4, 0, -5.5, 0)
+	block(list, "Main", 3.2, 0.6, 3.2, 0, -4.7, 0)
+	block(list, "Main", 2.4, 3, 2.4, 0, -2.9, 0)
+	block(list, "Main", 2.1, 3, 2.1, 0, 0.1, 0)
+	block(list, "Main", 1.8, 2.4, 1.8, 0, 2.8, 0)
+	block(list, "Accent", 2.6, 0.2, 2.6, 0, -1.4, 0)
+	block(list, "Accent", 2.3, 0.2, 2.3, 0, 1.6, 0)
+	for _, side in { -1, 1 } do
+		block(list, "Detail", 1.2, 1.8, 0.06, 0, -2.9, side * 1.21)
+		block(list, "Detail", 0.06, 1.8, 1.2, side * 1.21, -2.9, 0)
+	end
+	block(list, "Trim", 2.6, 0.4, 2.6, 0, 4.2, 0)
+	cylinder(list, "Accent", 3, 0.5, 0, 4.65, 0)
+	stone(
+		list,
+		"Accent",
+		Vector3.new(0.8, 0.8, 0.8),
+		CFrame.new(0, 5.3, 0) * CFrame.Angles(math.rad(45), 0, math.rad(45)),
+		nil,
+		Enum.Material.Neon,
+		CRYSTAL
+	)
+	restyle(list, Enum.Material.Neon, CRYSTAL, "Crystal")
+	return list
+end
+
 local PREFABS: { [string]: Prefab } = {
+	WallTorch = { build = wallTorch, collision = "bounds" },
+	Brazier = { build = brazier, collision = "bounds" },
+	ObeliskLamp = { build = obeliskLamp, collision = "bounds" },
 	BrickWall = { build = brickWall, collision = "bounds" },
 	CobbleRoad = { build = cobbleRoad, collision = "bounds" },
 	MosaicRoad = { build = mosaicRoad, collision = "bounds" },
@@ -738,7 +850,7 @@ end
 local pieceCache: { [string]: { Piece } } = {}
 
 -- Детали формы. Для простых форм (Блок, Стена, ...) — одна коробка размера формы.
-function BlockLibrary.getPieces(shapeId: string, factionId: string?): { Piece }
+local function basePieces(shapeId: string, factionId: string?): { Piece }
 	local key = shapeId .. "|" .. (factionId or "")
 	local cached = pieceCache[key]
 	if cached then
@@ -762,7 +874,7 @@ end
 local collisionCache: { [string]: { Box } } = {}
 
 -- Коробки для проверки пересечений при установке (относительно центра формы).
-function BlockLibrary.getCollisionBoxes(shapeId: string): { Box }
+local function baseBoxes(shapeId: string): { Box }
 	local cached = collisionCache[shapeId]
 	if cached then
 		return cached
@@ -775,7 +887,7 @@ function BlockLibrary.getCollisionBoxes(shapeId: string): { Box }
 	local boxes: { Box } = {}
 	local prefab = PREFABS[shapeId]
 	if prefab and prefab.collision == "pieces" then
-		for _, piece in BlockLibrary.getPieces(shapeId, nil) do
+		for _, piece in basePieces(shapeId, nil) do
 			table.insert(boxes, { cframe = piece.cframe, size = piece.size })
 		end
 	else
@@ -811,9 +923,62 @@ function BlockLibrary.getPalette(factionId: string?): BuildConfig.Palette
 	return (if factionId then BuildConfig.FactionPalettes[factionId] else nil) or BuildConfig.DefaultPalette
 end
 
+-- Растягивает детали префаба по осям формы. Деталь, повёрнутая на прямой угол, растягивается
+-- точно; у наклонной каждая сторона получает растяжение вдоль своего направления.
+local function scalePieces(pieces: { Piece }, scale: Vector3): { Piece }
+	local result: { Piece } = table.create(#pieces)
+	for index, piece in pieces do
+		local rotation = piece.cframe.Rotation
+		local copy = table.clone(piece)
+		copy.size = Vector3.new(
+			piece.size.X * (rotation.XVector * scale).Magnitude,
+			piece.size.Y * (rotation.YVector * scale).Magnitude,
+			piece.size.Z * (rotation.ZVector * scale).Magnitude
+		)
+		copy.cframe = CFrame.new(piece.cframe.Position * scale) * rotation
+		result[index] = copy
+	end
+	return result
+end
+
+local function isCustomSize(shape: BuildConfig.Shape?, size: Vector3?): boolean
+	return shape ~= nil and size ~= nil and (size - shape.size).Magnitude > 1e-3
+end
+
+-- Детали формы. size — свой размер: базовая форма становится одним боксом этого размера,
+-- составная растягивается пропорционально от родного размера.
+function BlockLibrary.getPieces(shapeId: string, factionId: string?, size: Vector3?): { Piece }
+	local shape = BuildConfig.Shapes[shapeId]
+	if not shape or not size or not isCustomSize(shape, size) then
+		return basePieces(shapeId, factionId)
+	end
+	if not PREFABS[shapeId] then
+		local box: Piece = { kind = "Block", role = "Main", size = size, cframe = CFrame.identity }
+		return { box }
+	end
+	return scalePieces(basePieces(shapeId, factionId), size / shape.size)
+end
+
+-- Коробки для проверки пересечений при установке (с учётом своего размера формы).
+function BlockLibrary.getCollisionBoxes(shapeId: string, size: Vector3?): { Box }
+	local shape = BuildConfig.Shapes[shapeId]
+	if not shape or not size or not isCustomSize(shape, size) then
+		return baseBoxes(shapeId)
+	end
+	local prefab = PREFABS[shapeId]
+	if prefab and prefab.collision == "pieces" then
+		local boxes: { Box } = {}
+		for _, piece in BlockLibrary.getPieces(shapeId, nil, size) do
+			table.insert(boxes, { cframe = piece.cframe, size = piece.size })
+		end
+		return boxes
+	end
+	return { { cframe = CFrame.identity, size = size } }
+end
+
 -- Собирает закреплённую модель префаба в мире: центр формы = cframe.
-function BlockLibrary.buildModel(shapeId: string, factionId: string?, cframe: CFrame): Model?
-	local pieces = BlockLibrary.getPieces(shapeId, factionId)
+function BlockLibrary.buildModel(shapeId: string, factionId: string?, cframe: CFrame, size: Vector3?): Model?
+	local pieces = BlockLibrary.getPieces(shapeId, factionId, size)
 	if #pieces == 0 then
 		return nil
 	end
@@ -835,6 +1000,10 @@ function BlockLibrary.buildModel(shapeId: string, factionId: string?, cframe: CF
 		end
 		part.Material = piece.material or look.material
 		part.Color = color
+		local effect = piece.effect
+		if effect then
+			LightEffects.apply(part, effect)
+		end
 		part.Anchored = true
 		part.CanCollide = true
 		part.CFrame = cframe * piece.cframe
@@ -884,6 +1053,7 @@ BlockCatalog.Categories = {
 	{ id = "Stairs", label = "Ступени" },
 	{ id = "Roofs", label = "Крыши" },
 	{ id = "Decor", label = "Декор" },
+	{ id = "Lighting", label = "Освещение" },
 } :: { Category }
 
 BlockCatalog.List = {
@@ -1025,6 +1195,28 @@ BlockCatalog.List = {
 		displayName = "Обелиск",
 		description = "Золотой пирамидион",
 		category = "Decor",
+		featured = { "Egypt" },
+	},
+
+	-- Освещение: светильники с тёплым светом и пламенем
+	{
+		id = "WallTorch",
+		displayName = "Настенный факел",
+		description = "Вешается на стену",
+		category = "Lighting",
+	},
+	{
+		id = "Brazier",
+		displayName = "Храмовая жаровня",
+		description = "Треножник с углями",
+		category = "Lighting",
+		featured = { "Greece", "Rome" },
+	},
+	{
+		id = "ObeliskLamp",
+		displayName = "Египетский обелиск-светильник",
+		description = "Сияющий кристалл 4×12×4",
+		category = "Lighting",
 		featured = { "Egypt" },
 	},
 } :: { Entry }
@@ -1270,6 +1462,7 @@ return BuildSlots
 export type Shape = {
 	id: string, -- совпадает с id в BlockCatalog
 	size: Vector3, -- габарит без поворота (X = длина, Y = высота, Z = толщина)
+	wallMount: boolean?, -- на вертикальной грани сам разворачивается тыльной стороной (-Z) к стене
 	prefab: boolean?, -- true = составная модель из BlockLibrary (резаком не используется)
 }
 
@@ -1302,6 +1495,7 @@ BuildConfig.MoveRemoteName = "MoveBlock"
 BuildConfig.PaintRemoteName = "PaintBlock"
 BuildConfig.TabletRemoteName = "PlaceTablet"
 BuildConfig.EraseTabletRemoteName = "EraseTablet"
+BuildConfig.ToggleLightRemoteName = "ToggleLight"
 BuildConfig.NoticeRemoteName = "BuildNotice" -- сервер -> клиент: короткие сообщения для панели
 
 -- Папки внутри Part участка. Лежат внутри участка, поэтому удаляются вместе с ним.
@@ -1343,6 +1537,7 @@ BuildConfig.Keys = {
 	TiltZ = Enum.KeyCode.Y, -- наклон вбок (ось Z)
 	QuickDelete = Enum.KeyCode.X, -- удалить свой блок под курсором
 	OpenCatalog = Enum.KeyCode.B, -- открыть/закрыть каталог блоков
+	ToggleLight = Enum.KeyCode.L, -- зажечь/погасить свой светильник под курсором
 }
 
 -- Защита сервера от спама и лимиты.
@@ -1350,7 +1545,8 @@ BuildConfig.PlaceCooldown = 0.08 -- секунд между установкам
 BuildConfig.RemoveCooldown = 0.05 -- секунд между удалениями
 BuildConfig.CarveCooldown = 0.35 -- CSG — дорогая операция
 BuildConfig.MaxBlocksPerPlayer = 2000
-BuildConfig.MaxCarveTargets = 8 -- сколько блоков максимум прорезает один клик
+BuildConfig.MaxCarveTargets = 24 -- сколько деталей максимум прорезает один клик (у моделей режется каждая)
+BuildConfig.LightCooldown = 0.2 -- секунд между переключениями светильника
 BuildConfig.MoveCooldown = 0.1 -- секунд между переносами
 BuildConfig.PaintCooldown = 0.05 -- секунд между покрасками
 BuildConfig.TabletCooldown = 0.3 -- секунд между скрижалями
@@ -1363,6 +1559,9 @@ BuildConfig.TabletMinWidth = 1.5
 -- Пользовательский размер базовых блоков и резака (панель «Точность»).
 BuildConfig.MinBlockSize = 0.25
 BuildConfig.MaxBlockSize = 64
+-- Составные блоки растягиваются пропорционально: от четверти до четырёх родных размеров по оси.
+BuildConfig.PrefabMinScale = 0.25
+BuildConfig.PrefabMaxScale = 4
 BuildConfig.FreeSizeStep = 0.05 -- шаг кнопок −/+ при сетке «0»
 
 -- Формы резака: «куб» — выбранная базовая форма, «полоса» — тонкая пластина.
@@ -1421,6 +1620,11 @@ BuildConfig.Shapes = {
 	RuinWall = { id = "RuinWall", size = Vector3.new(12, 8, 4), prefab = true },
 	CobbleRoad = { id = "CobbleRoad", size = Vector3.new(8, 1, 8), prefab = true },
 	MosaicRoad = { id = "MosaicRoad", size = Vector3.new(8, 1, 8), prefab = true },
+
+	-- Освещение
+	WallTorch = { id = "WallTorch", size = Vector3.new(1, 4, 2), prefab = true, wallMount = true },
+	Brazier = { id = "Brazier", size = Vector3.new(4, 4, 4), prefab = true },
+	ObeliskLamp = { id = "ObeliskLamp", size = Vector3.new(4, 12, 4), prefab = true },
 } :: { [string]: Shape }
 
 -- Базовый материал блоков по фракции: песчаник для Египта, мрамор для Рима и Греции.
@@ -1483,6 +1687,9 @@ BuildConfig.PaintHighlightColor = Color3.fromRGB(255, 200, 60)
 BuildConfig.MoveHandlesColor = Color3.fromRGB(255, 200, 60)
 BuildConfig.MovePendingTimeout = 1
 
+-- Тег CollectionService на PointLight светильников: клиент оживляет их мерцанием.
+BuildConfig.FlickerTag = "FlickerLight"
+
 -- Сколько секунд держится сообщение на панели «Точность».
 BuildConfig.NoticeDuration = 3
 
@@ -1534,6 +1741,7 @@ export type PlacementRequest = {
 
 export type Placement = {
 	cframe: CFrame, -- мировой CFrame фигуры
+	angles: Angles?, -- углы, если фигура развернулась сама (настенный светильник); иначе углы игрока
 	localCenter: Vector3, -- центр в координатах участка (его клиент отправляет серверу)
 	extents: Vector3, -- габариты с учётом поворота (AABB в координатах участка)
 }
@@ -1704,7 +1912,18 @@ function BuildGrid.computePlacement(req: PlacementRequest): Placement?
 	local plot = req.plot
 	local plotCFrame = plot.CFrame
 	local size = req.size or shape.size
-	local rotation = BuildGrid.makeRotation(req.angles)
+
+	-- Настенная форма на вертикальной грани сама встаёт тыльной стороной (-Z) к стене.
+	local mounted: Angles? = nil
+	if shape.wallMount and not req.inward then
+		local wallNormal = plotCFrame:VectorToObjectSpace(req.hitNormal)
+		if math.abs(wallNormal.Y) < 0.5 then
+			local step = BuildConfig.MinRotationStep
+			local yaw = math.deg(math.atan2(wallNormal.X, wallNormal.Z))
+			mounted = { yaw = (math.round(yaw / step) * step) % 360, pitch = 0, roll = 0 }
+		end
+	end
+	local rotation = BuildGrid.makeRotation(mounted or req.angles)
 	local extents = BuildGrid.getExtents(rotation, size)
 	-- Установка — фигура снаружи грани; резак — утоплен в грань (прорезает внутрь блока).
 	local direction = if req.inward then -1 else 1
@@ -1761,6 +1980,7 @@ function BuildGrid.computePlacement(req: PlacementRequest): Placement?
 	center = roundVector(center)
 	return {
 		cframe = plotCFrame * CFrame.new(center) * rotation,
+		angles = mounted,
 		localCenter = center,
 		extents = extents,
 	}
@@ -1867,8 +2087,8 @@ end
 -- То же для любой формы, включая составные: проверяются коробки из BlockLibrary
 -- (у арки — опоры и свод, у лестницы — ступени), поэтому под аркой и над ступенями
 -- можно строить. Каждая коробка уменьшается на тот же допуск касания.
-function BuildGrid.isShapeBlocked(plot: BasePart, cframe: CFrame, shapeId: string): boolean
-	local boxes = BlockLibrary.getCollisionBoxes(shapeId)
+function BuildGrid.isShapeBlocked(plot: BasePart, cframe: CFrame, shapeId: string, size: Vector3?): boolean
+	local boxes = BlockLibrary.getCollisionBoxes(shapeId, size)
 	if #boxes == 0 then
 		return true
 	end
@@ -1893,7 +2113,12 @@ function BuildGrid.findCarveTargets(plot: BasePart, cframe: CFrame, size: Vector
 	local shrunk = size - Vector3.one * (BuildConfig.OverlapTolerance * 2)
 	local targets: { BasePart } = {}
 	for _, part in BuildGrid.queryBox(cframe, shrunk, { blocks }) do
-		if part.Parent == blocks and part:GetAttribute(BuildConfig.Attributes.OwnerUserId) == ownerUserId then
+		-- Цель — сам блок или деталь составной модели: владельца смотрим у корня в папке Blocks.
+		local root: Instance = part
+		while root.Parent and root.Parent ~= blocks do
+			root = root.Parent
+		end
+		if root.Parent == blocks and root:GetAttribute(BuildConfig.Attributes.OwnerUserId) == ownerUserId then
 			table.insert(targets, part)
 		end
 	end
@@ -2007,32 +2232,46 @@ function BuildSize.round(size: Vector3): Vector3
 	return Vector3.new(round3(size.X), round3(size.Y), round3(size.Z))
 end
 
-function BuildSize.clamp(value: number, minSize: number): number
-	return round3(math.clamp(value, minSize, BuildConfig.MaxBlockSize))
+function BuildSize.clamp(value: number, minSize: number, maxSize: number?): number
+	return round3(math.clamp(value, minSize, maxSize or BuildConfig.MaxBlockSize))
 end
 
--- Сервер: размер от клиента — конечный Vector3 в пределах [minSize, MaxBlockSize].
-function BuildSize.isValid(value: unknown, minSize: number): boolean
+-- Допустимые размеры формы по осям. Базовые формы: общий минимум (basicMin) и максимум.
+-- Составные растягиваются пропорционально, поэтому пределы считаются от их родного размера.
+function BuildSize.limits(shape: BuildConfig.Shape, basicMin: number?): (Vector3, Vector3)
+	local ceiling = Vector3.one * BuildConfig.MaxBlockSize
+	if shape.prefab then
+		return shape.size * BuildConfig.PrefabMinScale, (shape.size * BuildConfig.PrefabMaxScale):Min(ceiling)
+	end
+	return Vector3.one * (basicMin or BuildConfig.MinBlockSize), ceiling
+end
+
+-- Сервер: размер от клиента — конечный Vector3 в пределах [minSize, maxSize] по каждой оси.
+function BuildSize.isValid(value: unknown, minSize: Vector3, maxSize: Vector3): boolean
 	if typeof(value) ~= "Vector3" then
 		return false
 	end
 	local size = value :: Vector3
-	for _, c in { size.X, size.Y, size.Z } do
-		if c ~= c or c < minSize - EPSILON or c > BuildConfig.MaxBlockSize + EPSILON then
-			return false
-		end
+	if size.X ~= size.X or size.Y ~= size.Y or size.Z ~= size.Z then
+		return false -- NaN
 	end
-	return true
+	local low, high = minSize - Vector3.one * EPSILON, maxSize + Vector3.one * EPSILON
+	return size.X >= low.X
+		and size.Y >= low.Y
+		and size.Z >= low.Z
+		and size.X <= high.X
+		and size.Y <= high.Y
+		and size.Z <= high.Z
 end
 
 -- Кнопки −/+: к ближайшему кратному шага сетки в нужную сторону (при сетке «0» — мелкий шаг).
-function BuildSize.nudge(value: number, gridStep: number, direction: number, minSize: number): number
+function BuildSize.nudge(value: number, gridStep: number, direction: number, minSize: number, maxSize: number?): number
 	local step = if gridStep > 0 then gridStep else BuildConfig.FreeSizeStep
 	local ratio = value / step
 	local nextValue = if direction > 0
 		then (math.floor(ratio + EPSILON) + 1) * step
 		else (math.ceil(ratio - EPSILON) - 1) * step
-	return BuildSize.clamp(nextValue, minSize)
+	return BuildSize.clamp(nextValue, minSize, maxSize)
 end
 
 -- Текст из поля ввода; запятая допускается как десятичный разделитель.
@@ -2168,6 +2407,152 @@ for _, tablet in PaintCatalog.Tablets do
 end
 
 return PaintCatalog
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD53"><Properties><string name="Name">LightEffects</string><string name="Source"><![CDATA[--!strict
+-- LightEffects: «живые» эффекты светильников — тёплый PointLight, пламя и искры.
+-- BlockLibrary вешает эффект на светящуюся деталь префаба (Piece.effect), сервер включает
+-- и выключает светильник целиком (setEnabled). Мерцание света считает клиент (LightFlicker):
+-- свет помечается тегом, а сервер не шлёт по сети изменение яркости каждый кадр.
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
+
+export type Effect = {
+	range: number, -- радиус света в студах
+	brightness: number,
+	color: Color3,
+	flicker: number, -- размах мерцания (доля яркости)
+	fire: { size: number, heat: number }?, -- пламя (Fire)
+	sparks: number, -- искр в секунду (ParticleEmitter)
+}
+
+local LightEffects = {}
+
+LightEffects.BaseBrightnessAttribute = "BaseBrightness"
+LightEffects.FlickerAttribute = "Flicker"
+
+local EFFECT_ATTRIBUTE = "LightEffect" -- стоит на созданных здесь PointLight / Fire / ParticleEmitter
+local OFF_ATTRIBUTE = "LightsOff" -- стоит на блоке, пока светильник погашен
+
+local EFFECTS: { [string]: Effect } = {
+	-- Настенный факел
+	Torch = {
+		range = 24,
+		brightness = 1.6,
+		color = Color3.fromRGB(255, 160, 70),
+		flicker = 0.22,
+		fire = { size = 3, heat = 7 },
+		sparks = 3,
+	},
+	-- Храмовая жаровня
+	Brazier = {
+		range = 36,
+		brightness = 2,
+		color = Color3.fromRGB(255, 150, 60),
+		flicker = 0.18,
+		fire = { size = 6, heat = 10 },
+		sparks = 6,
+	},
+	-- Кристалл обелиска: ровное золотое сияние без пламени
+	Crystal = {
+		range = 50,
+		brightness = 1.8,
+		color = Color3.fromRGB(255, 205, 110),
+		flicker = 0.06,
+		fire = nil,
+		sparks = 2,
+	},
+}
+
+local function mark(instance: Instance)
+	instance:SetAttribute(EFFECT_ATTRIBUTE, true)
+end
+
+-- Вешает эффект на светящуюся деталь. Неизвестный id молча пропускается.
+function LightEffects.apply(part: BasePart, effectId: string)
+	local effect = EFFECTS[effectId]
+	if not effect then
+		return
+	end
+
+	local light = Instance.new("PointLight")
+	light.Name = "Glow"
+	light.Range = effect.range
+	light.Brightness = effect.brightness
+	light.Color = effect.color
+	light.Shadows = false
+	light:SetAttribute(LightEffects.BaseBrightnessAttribute, effect.brightness)
+	light:SetAttribute(LightEffects.FlickerAttribute, effect.flicker)
+	mark(light)
+	CollectionService:AddTag(light, BuildConfig.FlickerTag)
+	light.Parent = part
+
+	local fire = effect.fire
+	if fire then
+		local flames = Instance.new("Fire")
+		flames.Name = "Flames"
+		flames.Size = fire.size
+		flames.Heat = fire.heat
+		flames.Color = effect.color
+		flames.SecondaryColor = Color3.fromRGB(150, 40, 10)
+		mark(flames)
+		flames.Parent = part
+	end
+
+	if effect.sparks > 0 then
+		local sparks = Instance.new("ParticleEmitter")
+		sparks.Name = "Sparks"
+		sparks.Rate = effect.sparks
+		sparks.Lifetime = NumberRange.new(1, 2.2)
+		sparks.Speed = NumberRange.new(1.5, 3.5)
+		sparks.SpreadAngle = Vector2.new(25, 25)
+		sparks.Acceleration = Vector3.new(0, 2, 0)
+		sparks.EmissionDirection = Enum.NormalId.Top
+		sparks.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.18),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		sparks.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.1),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		sparks.Color = ColorSequence.new(effect.color)
+		sparks.LightEmission = 1
+		mark(sparks)
+		sparks.Parent = part
+	end
+end
+
+-- Зажигает или гасит все эффекты блока. Возвращает false, если это не светильник.
+function LightEffects.setEnabled(block: Instance, enabled: boolean): boolean
+	local found = false
+	for _, descendant in block:GetDescendants() do
+		if descendant:GetAttribute(EFFECT_ATTRIBUTE) then
+			if descendant:IsA("PointLight") then
+				descendant.Enabled = enabled
+				found = true
+			elseif descendant:IsA("Fire") then
+				descendant.Enabled = enabled
+				found = true
+			elseif descendant:IsA("ParticleEmitter") then
+				descendant.Enabled = enabled
+				found = true
+			end
+		end
+	end
+	if found then
+		block:SetAttribute(OFF_ATTRIBUTE, if enabled then nil else true)
+	end
+	return found
+end
+
+function LightEffects.isOff(block: Instance): boolean
+	return block:GetAttribute(OFF_ATTRIBUTE) == true
+end
+
+return LightEffects
 ]]></string></Properties></Item>
 </Item>
   </Item>
@@ -2769,6 +3154,7 @@ local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
 local BuildSize = require(ReplicatedStorage.Shared.BuildSize)
 local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
+local LightEffects = require(ReplicatedStorage.Shared.LightEffects)
 
 local PlotOwnership = require(script.Parent.PlotOwnership)
 local BlockFactory = require(script.Parent.BlockFactory)
@@ -2792,6 +3178,7 @@ local moveRemote = makeRemote(BuildConfig.MoveRemoteName)
 local paintRemote = makeRemote(BuildConfig.PaintRemoteName)
 local tabletRemote = makeRemote(BuildConfig.TabletRemoteName)
 local eraseRemote = makeRemote(BuildConfig.EraseTabletRemoteName)
+local lightRemote = makeRemote(BuildConfig.ToggleLightRemoteName)
 local noticeRemote = makeRemote(BuildConfig.NoticeRemoteName)
 
 type ShapeRequest = {
@@ -2898,10 +3285,11 @@ local function parseShapeRequest(
 	end
 
 	local angles: BuildGrid.Angles = { yaw = yaw :: number, pitch = pitch :: number, roll = roll :: number }
-	-- Свой размер разрешён только базовым формам и только в допустимых пределах.
+	-- Свой размер — только в допустимых для формы пределах (у составных — от родного размера).
 	local actualSize = shape.size
 	if size ~= nil then
-		if shape.prefab or not BuildSize.isValid(size, minSize) then
+		local low, high = BuildSize.limits(shape, minSize)
+		if not BuildSize.isValid(size, low, high) then
 			return nil
 		end
 		actualSize = BuildSize.round(size :: Vector3)
@@ -2959,7 +3347,7 @@ placeRemote.OnServerEvent:Connect(
 		-- Базовая форма — один бокс своего размера; составная — боксы из библиотеки.
 		local shape = BuildConfig.Shapes[request.shapeId]
 		local blocked = if shape.prefab
-			then BuildGrid.isShapeBlocked(plot, placement.cframe, request.shapeId)
+			then BuildGrid.isShapeBlocked(plot, placement.cframe, request.shapeId, request.size)
 			else BuildGrid.isBlocked(plot, placement.cframe, request.size)
 		if blocked then
 			return
@@ -3014,7 +3402,7 @@ carveRemote.OnServerEvent:Connect(
 		end
 
 		carving[player] = true
-		local ok, result = pcall(BlockCarver.carve, targets, placement.cframe, request.size, request.blocks)
+		local ok, result = pcall(BlockCarver.carve, targets, placement.cframe, request.size)
 		carving[player] = nil
 
 		if not ok then
@@ -3093,6 +3481,17 @@ local function findOwnPart(player: Player, clicked: unknown): (BasePart?, PlotOw
 	end
 	return clicked, claim
 end
+
+-- Светильник: зажечь или погасить свой блок с огнём (клавиша L на клиенте).
+lightRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown)
+	if typeof(clicked) ~= "Instance" or not cooldownPassed(player, "light", BuildConfig.LightCooldown) then
+		return
+	end
+	local block = findOwnBlock(player, clicked)
+	if block and not LightEffects.setEnabled(block, LightEffects.isOff(block)) then
+		notify(player, "Это не светильник")
+	end
+end)
 
 -- Покраска: клиент присылает деталь, по которой кликнул, и id материала из PaintCatalog.
 paintRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown, materialId: unknown)
@@ -3196,7 +3595,7 @@ local function createBasic(shapeId: string, size: Vector3, factionId: string, cf
 	return part
 end
 
--- size — свой размер базовой формы (составные блоки всегда строятся в размере из библиотеки).
+-- size — свой размер формы (составные блоки растягиваются пропорционально).
 function BlockFactory.create(
 	shapeId: string,
 	factionId: string,
@@ -3211,7 +3610,7 @@ function BlockFactory.create(
 
 	local block: Instance?
 	if shape.prefab then
-		block = BlockLibrary.buildModel(shapeId, factionId, cframe)
+		block = BlockLibrary.buildModel(shapeId, factionId, cframe, size)
 	else
 		block = createBasic(shapeId, size or shape.size, factionId, cframe)
 	end
@@ -3280,39 +3679,43 @@ local function adopt(union: BasePart, original: BasePart)
 	union.Material = original.Material
 	union.Color = original.Color
 	union.Reflectance = original.Reflectance
-	-- Скрижали с граней исходного блока переезжают на результат.
-	for _, child in original:GetChildren() do
-		if child:GetAttribute(BuildConfig.Attributes.TabletId) ~= nil then
-			child.Parent = union
-		end
-	end
 	if union:IsA("UnionOperation") then
 		-- Стенки среза красим цветом блока, а не цветом резака.
 		union.UsePartColor = true
 	end
+	-- Всё, что висело на исходной детали (скрижали, свет и пламя светильника), переезжает на результат.
+	for _, child in original:GetChildren() do
+		child.Parent = union
+	end
 end
 
--- Вырезает коробку (cutterCFrame, cutterSize) из каждого блока targets.
--- folder — папка Blocks участка: результат кладётся туда же, исходный блок удаляется.
-function BlockCarver.carve(targets: { BasePart }, cutterCFrame: CFrame, cutterSize: Vector3, folder: Instance): CarveResult
+-- Вырезает коробку (cutterCFrame, cutterSize) из каждой детали targets.
+-- Цель — одиночный блок или деталь составной модели: результат CSG встаёт на место
+-- исходной детали в том же родителе (папка Blocks или Model), поэтому модель остаётся цельной.
+function BlockCarver.carve(targets: { BasePart }, cutterCFrame: CFrame, cutterSize: Vector3): CarveResult
 	local result: CarveResult = { carved = 0, removed = 0, failed = 0 }
 	local cutter = makeCutter(cutterCFrame, cutterSize)
 	cutter.Parent = workspace
 
 	for _, target in targets do
-		if target.Parent ~= folder then
-			continue -- блок уже удалили
+		local parent = target.Parent
+		if not parent then
+			continue -- деталь уже удалили
 		end
 
-		-- Резак накрывает блок целиком: от блока ничего не останется — просто удаляем его
-		-- (SubtractAsync с пустым результатом всё равно вернул бы ошибку).
+		-- Резак накрыл деталь целиком: вычитать нечего (SubtractAsync вернул бы пустоту
+		-- и бросил ошибку), просто удаляем её.
 		if BuildGrid.isBoxInside(target.CFrame, target.Size, cutter.CFrame, cutter.Size) then
 			target:Destroy()
 			result.removed += 1
+			-- От составной модели ничего не осталось — убираем и пустую оболочку.
+			if parent:IsA("Model") and #BuildGrid.blockParts(parent) == 0 then
+				parent:Destroy()
+			end
 			continue
 		end
 
-		-- Срез в материале и цвете самого блока.
+		-- Цвет и материал резака задают вид стенок выреза — делаем их как у детали.
 		cutter.Material = target.Material
 		cutter.Color = target.Color
 
@@ -3328,10 +3731,10 @@ function BlockCarver.carve(targets: { BasePart }, cutterCFrame: CFrame, cutterSi
 			warn("[BlockCarver] SubtractAsync не справился:", union)
 			result.failed += 1
 		elseif typeof(union) == "Instance" and union:IsA("BasePart") then
-			-- SubtractAsync уступает выполнение: за это время блок могли удалить.
-			if target.Parent == folder then
+			-- Пока шёл CSG, деталь могли снести или перенести в другое место иерархии.
+			if target.Parent == parent then
 				adopt(union, target)
-				union.Parent = folder
+				union.Parent = parent
 				target:Destroy()
 				result.carved += 1
 			else
@@ -3658,10 +4061,12 @@ return TabletFactory
 local Players = game:GetService("Players")
 
 local MenuController = require(script.MenuController)
+local LightFlicker = require(script.LightFlicker)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 
+LightFlicker.start() -- мерцание огня светильников
 MenuController.start(playerGui)
 ]]></string>
           </Properties>
@@ -5347,6 +5752,7 @@ local UserInputService = game:GetService("UserInputService")
 
 local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
+local BuildSize = require(ReplicatedStorage.Shared.BuildSize)
 local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 local BlockCatalog = require(ReplicatedStorage.Shared.BlockCatalog)
 local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
@@ -5371,6 +5777,7 @@ type Remotes = {
 	paint: RemoteEvent,
 	tablet: RemoteEvent,
 	erase: RemoteEvent,
+	light: RemoteEvent,
 	notice: RemoteEvent,
 }
 
@@ -5467,11 +5874,12 @@ local function shapeName(shapeId: string): string
 	return BlockCatalog.displayName(shapeId)
 end
 
--- Свой размер из панели «Точность» — только для базовых форм и резака (nil = размер формы).
+-- Свой размер из панели «Точность»: базовая форма и резак меняются по осям свободно,
+-- составной блок растягивается пропорционально (nil = сейчас размер не нужен).
 local function activeSize(s: Session): Vector3?
 	local shapeId = s.shapeId
 	local shape = if shapeId then BuildConfig.Shapes[shapeId] else nil
-	if not shape or shape.prefab or (s.mode ~= "Place" and s.mode ~= "Carve") then
+	if not shape or (s.mode ~= "Place" and s.mode ~= "Carve") then
 		return nil
 	end
 	return BuildSettingsController.get().size or shape.size
@@ -5488,8 +5896,9 @@ local function syncSize(s: Session)
 	BuildSettingsController.setCarveMode(s.mode == "Carve")
 	if isBlade(s) then
 		BuildSettingsController.setSizeTarget(BuildConfig.CutterBladeId, BuildConfig.BladeDefaultSize, true)
-	elseif shapeId and shape and not shape.prefab and (s.mode == "Place" or s.mode == "Carve") then
-		BuildSettingsController.setSizeTarget(shapeId, shape.size, false)
+	elseif shapeId and shape and (s.mode == "Place" or s.mode == "Carve") then
+		local minSize, maxSize = BuildSize.limits(shape)
+		BuildSettingsController.setSizeTarget(shapeId, shape.size, false, minSize, maxSize)
 	else
 		BuildSettingsController.setSizeTarget(nil)
 	end
@@ -5591,7 +6000,9 @@ local function tryPlace(s: Session)
 	if not cooldownPassed(s, CLIENT_PLACE_COOLDOWN) then
 		return
 	end
-	s.remotes.place:FireServer(shapeId, placement.localCenter, angles.yaw, angles.pitch, angles.roll, activeSize(s))
+	-- Настенная форма могла развернуться к стене сама: тогда шлём её углы, а не углы игрока.
+	local used = placement.angles or angles
+	s.remotes.place:FireServer(shapeId, placement.localCenter, used.yaw, used.pitch, used.roll, activeSize(s))
 end
 
 -- ЛКМ в режиме резака: сервер вычтет форму призрака из задетых блоков (SubtractAsync).
@@ -5719,9 +6130,9 @@ local function step(dt: number)
 				-- Установка: целиком на плите 200x200 и ни с чем не пересекается.
 				s.canAct = BuildGrid.isInsideArea(s.plot, placement.localCenter, placement.extents)
 					and not (
-						if size
-							then BuildGrid.isBlocked(s.plot, placement.cframe, size)
-							else BuildGrid.isShapeBlocked(s.plot, placement.cframe, shapeId)
+						if shape.prefab
+							then BuildGrid.isShapeBlocked(s.plot, placement.cframe, shapeId, size)
+							else BuildGrid.isBlocked(s.plot, placement.cframe, size or shape.size)
 					)
 				color = if s.canAct then BuildConfig.GhostValidColor else BuildConfig.GhostInvalidColor
 			else
@@ -5791,13 +6202,14 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	local paint = waitRemote(BuildConfig.PaintRemoteName)
 	local tablet = waitRemote(BuildConfig.TabletRemoteName)
 	local erase = waitRemote(BuildConfig.EraseTabletRemoteName)
+	local light = waitRemote(BuildConfig.ToggleLightRemoteName)
 	local notice = waitRemote(BuildConfig.NoticeRemoteName)
 	local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
 	if not blocks or not place or not remove or not carve or not move then
 		warn("[BuildController] Не найдены Blocks или RemoteEvent'ы, строительство не включено")
 		return false
 	end
-	if not paint or not tablet or not erase or not notice or not playerGui then
+	if not paint or not tablet or not erase or not light or not notice or not playerGui then
 		warn("[BuildController] Не найдены Blocks или RemoteEvent'ы, строительство не включено")
 		return false
 	end
@@ -5831,6 +6243,7 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 			paint = paint,
 			tablet = tablet,
 			erase = erase,
+			light = light,
 			notice = notice,
 		},
 		previewFolder = previewFolder,
@@ -5941,6 +6354,12 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 			elseif key == BuildConfig.Keys.QuickDelete then
 				-- X: быстрое удаление своего блока под курсором в любом режиме.
 				tryRemove(s, ownBlockFrom(s, raycastMouse(s)))
+			elseif key == BuildConfig.Keys.ToggleLight then
+				-- L: зажечь или погасить свой светильник под курсором в любом режиме.
+				local block = ownBlockFrom(s, raycastMouse(s))
+				if block then
+					s.remotes.light:FireServer(block)
+				end
 			elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
 				if s.mode == "Place" then
 					tryPlace(s)
@@ -5989,7 +6408,7 @@ local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BlockLibrary = require(ReplicatedStorage.Shared.BlockLibrary)
 
 export type Ghost = {
-	setShape: (shapeId: string, factionId: string?, size: Vector3?) -> (), -- size — свой размер базовой формы
+	setShape: (shapeId: string, factionId: string?, size: Vector3?) -> (), -- size — свой размер формы
 	update: (target: CFrame, color: Color3, dt: number) -> (),
 	hide: () -> (),
 	destroy: () -> (),
@@ -6046,13 +6465,10 @@ function GhostPreview.new(parent: Instance): Ghost
 		table.clear(pieces)
 
 		local shape = BuildConfig.Shapes[shapeId]
-		local specs = BlockLibrary.getPieces(shapeId, factionId)
-		if shape and size and not shape.prefab then
-			-- Базовая форма своего размера (в том числе тонкая полоса резака): один бокс.
-			bounds.Size = size
-			specs = { { kind = "Block", role = "Main", size = size, cframe = CFrame.identity } }
-		elseif shape then
-			bounds.Size = shape.size
+		-- Свой размер: базовая форма — один бокс, составная — пропорционально растянутые детали.
+		local specs = BlockLibrary.getPieces(shapeId, factionId, size)
+		if shape then
+			bounds.Size = size or shape.size
 		end
 		local base = bounds.CFrame
 		for _, spec in specs do
@@ -6156,6 +6572,8 @@ local sizes: { [string]: Vector3 } = {}
 local sizeKey: string? = nil
 local sizeDefault: Vector3? = nil
 local sizeLockZ = false
+local sizeMin = Vector3.one * BuildConfig.MinBlockSize
+local sizeMax = Vector3.one * BuildConfig.MaxBlockSize
 
 local AXIS_NAMES = { "Ширина X", "Высота Y", "Длина Z" }
 local LOCKED_AXIS_NAME = "Толщина Z"
@@ -6226,7 +6644,7 @@ local function refresh()
 	v.cutterRow.Visible = carveMode
 
 	local size = current.size
-	v.sizeLabel.Text = if size then "Размер (студы)" else "Размер: выберите базовую форму или резак"
+	v.sizeLabel.Text = if size then "Размер (студы)" else "Размер: выберите форму или резак"
 	v.sizeResetButton.Visible = size ~= nil
 	for axis, row in v.sizeRows do
 		local locked = axis == 3 and sizeLockZ
@@ -6246,7 +6664,7 @@ local function setAxis(axis: number, value: number)
 		refresh()
 		return
 	end
-	local clamped = BuildSize.clamp(value, BuildConfig.MinBlockSize)
+	local clamped = BuildSize.clamp(value, axisOf(sizeMin, axis), axisOf(sizeMax, axis))
 	sizes[key] = Vector3.new(
 		if axis == 1 then clamped else size.X,
 		if axis == 2 then clamped else size.Y,
@@ -6260,7 +6678,8 @@ end
 local function nudgeAxis(axis: number, direction: number)
 	local size = current.size
 	if size then
-		setAxis(axis, BuildSize.nudge(axisOf(size, axis), current.gridStep, direction, BuildConfig.MinBlockSize))
+		local low, high = axisOf(sizeMin, axis), axisOf(sizeMax, axis)
+		setAxis(axis, BuildSize.nudge(axisOf(size, axis), current.gridStep, direction, low, high))
 	end
 end
 
@@ -6390,7 +6809,16 @@ end
 -- Чей размер сейчас редактируется: key — id формы или полосы резака (у каждой свой запомненный
 -- размер), defaultSize — размер по умолчанию, lockZ — ось Z фиксирована (толщина полосы).
 -- key = nil — размер недоступен (составной блок, снос, перенос).
-function BuildSettingsController.setSizeTarget(key: string?, defaultSize: Vector3?, lockZ: boolean?)
+-- minSize / maxSize — пределы по осям (по умолчанию — пределы базового блока).
+function BuildSettingsController.setSizeTarget(
+	key: string?,
+	defaultSize: Vector3?,
+	lockZ: boolean?,
+	minSize: Vector3?,
+	maxSize: Vector3?
+)
+	sizeMin = minSize or Vector3.one * BuildConfig.MinBlockSize
+	sizeMax = maxSize or Vector3.one * BuildConfig.MaxBlockSize
 	sizeKey = key
 	sizeDefault = defaultSize
 	sizeLockZ = lockZ == true
@@ -6479,7 +6907,7 @@ local SIZE_BUTTON_WIDTH = 32
 
 local HINTS = {
 	"R — вращать (Y) · T / Y — наклон (X / Z)",
-	"X — удалить блок под курсором",
+	"X — удалить блок · L — зажечь / погасить огонь",
 	"ЛКМ — поставить / вырезать / выбрать",
 	"«Двигать»: тяните стрелки у блока",
 	"ПКМ — вращение камеры",
@@ -7460,6 +7888,67 @@ function PaintMenuView.build(gui: ScreenGui): View
 end
 
 return PaintMenuView
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD54"><Properties><string name="Name">LightFlicker</string><string name="Source"><![CDATA[--!strict
+-- LightFlicker (клиент): живое мерцание огня светильников.
+-- Сервер помечает PointLight тегом BuildConfig.FlickerTag и кладёт в атрибуты базовую яркость
+-- и размах мерцания (LightEffects). Яркость меняется только локально, по сети ничего не идёт.
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
+local LightEffects = require(ReplicatedStorage.Shared.LightEffects)
+
+local FLICKER_SPEED = 7
+
+local LightFlicker = {}
+
+local started = false
+local lights: { [PointLight]: number } = {} -- свет -> собственная фаза шума
+
+local function track(instance: Instance)
+	if instance:IsA("PointLight") then
+		lights[instance] = math.random() * 1000
+	end
+end
+
+local function untrack(instance: Instance)
+	if instance:IsA("PointLight") then
+		lights[instance] = nil
+	end
+end
+
+function LightFlicker.start()
+	if started then
+		return
+	end
+	started = true
+
+	CollectionService:GetInstanceAddedSignal(BuildConfig.FlickerTag):Connect(track)
+	CollectionService:GetInstanceRemovedSignal(BuildConfig.FlickerTag):Connect(untrack)
+	for _, instance in CollectionService:GetTagged(BuildConfig.FlickerTag) do
+		track(instance)
+	end
+
+	RunService.Heartbeat:Connect(function()
+		local now = os.clock() * FLICKER_SPEED
+		for light, phase in lights do
+			if light.Enabled then
+				local base = light:GetAttribute(LightEffects.BaseBrightnessAttribute)
+				local amount = light:GetAttribute(LightEffects.FlickerAttribute)
+				if typeof(base) == "number" and typeof(amount) == "number" then
+					-- Два наложенных шума: медленное «дыхание» пламени и быстрая дрожь.
+					local wave = math.noise(now, phase) + 0.5 * math.noise(now * 2.7, phase + 31)
+					light.Brightness = base * (1 + amount * wave)
+				end
+			end
+		end
+	end)
+end
+
+return LightFlicker
 ]]></string></Properties></Item>
 </Item>
       </Item>

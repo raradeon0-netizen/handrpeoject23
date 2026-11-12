@@ -14,6 +14,7 @@ local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
 local BuildSize = require(ReplicatedStorage.Shared.BuildSize)
 local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
+local LightEffects = require(ReplicatedStorage.Shared.LightEffects)
 
 local PlotOwnership = require(script.Parent.PlotOwnership)
 local BlockFactory = require(script.Parent.BlockFactory)
@@ -37,6 +38,7 @@ local moveRemote = makeRemote(BuildConfig.MoveRemoteName)
 local paintRemote = makeRemote(BuildConfig.PaintRemoteName)
 local tabletRemote = makeRemote(BuildConfig.TabletRemoteName)
 local eraseRemote = makeRemote(BuildConfig.EraseTabletRemoteName)
+local lightRemote = makeRemote(BuildConfig.ToggleLightRemoteName)
 local noticeRemote = makeRemote(BuildConfig.NoticeRemoteName)
 
 type ShapeRequest = {
@@ -143,10 +145,11 @@ local function parseShapeRequest(
 	end
 
 	local angles: BuildGrid.Angles = { yaw = yaw :: number, pitch = pitch :: number, roll = roll :: number }
-	-- Свой размер разрешён только базовым формам и только в допустимых пределах.
+	-- Свой размер — только в допустимых для формы пределах (у составных — от родного размера).
 	local actualSize = shape.size
 	if size ~= nil then
-		if shape.prefab or not BuildSize.isValid(size, minSize) then
+		local low, high = BuildSize.limits(shape, minSize)
+		if not BuildSize.isValid(size, low, high) then
 			return nil
 		end
 		actualSize = BuildSize.round(size :: Vector3)
@@ -204,7 +207,7 @@ placeRemote.OnServerEvent:Connect(
 		-- Базовая форма — один бокс своего размера; составная — боксы из библиотеки.
 		local shape = BuildConfig.Shapes[request.shapeId]
 		local blocked = if shape.prefab
-			then BuildGrid.isShapeBlocked(plot, placement.cframe, request.shapeId)
+			then BuildGrid.isShapeBlocked(plot, placement.cframe, request.shapeId, request.size)
 			else BuildGrid.isBlocked(plot, placement.cframe, request.size)
 		if blocked then
 			return
@@ -259,7 +262,7 @@ carveRemote.OnServerEvent:Connect(
 		end
 
 		carving[player] = true
-		local ok, result = pcall(BlockCarver.carve, targets, placement.cframe, request.size, request.blocks)
+		local ok, result = pcall(BlockCarver.carve, targets, placement.cframe, request.size)
 		carving[player] = nil
 
 		if not ok then
@@ -338,6 +341,17 @@ local function findOwnPart(player: Player, clicked: unknown): (BasePart?, PlotOw
 	end
 	return clicked, claim
 end
+
+-- Светильник: зажечь или погасить свой блок с огнём (клавиша L на клиенте).
+lightRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown)
+	if typeof(clicked) ~= "Instance" or not cooldownPassed(player, "light", BuildConfig.LightCooldown) then
+		return
+	end
+	local block = findOwnBlock(player, clicked)
+	if block and not LightEffects.setEnabled(block, LightEffects.isOff(block)) then
+		notify(player, "Это не светильник")
+	end
+end)
 
 -- Покраска: клиент присылает деталь, по которой кликнул, и id материала из PaintCatalog.
 paintRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown, materialId: unknown)

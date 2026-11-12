@@ -18,32 +18,46 @@ function BuildSize.round(size: Vector3): Vector3
 	return Vector3.new(round3(size.X), round3(size.Y), round3(size.Z))
 end
 
-function BuildSize.clamp(value: number, minSize: number): number
-	return round3(math.clamp(value, minSize, BuildConfig.MaxBlockSize))
+function BuildSize.clamp(value: number, minSize: number, maxSize: number?): number
+	return round3(math.clamp(value, minSize, maxSize or BuildConfig.MaxBlockSize))
 end
 
--- Сервер: размер от клиента — конечный Vector3 в пределах [minSize, MaxBlockSize].
-function BuildSize.isValid(value: unknown, minSize: number): boolean
+-- Допустимые размеры формы по осям. Базовые формы: общий минимум (basicMin) и максимум.
+-- Составные растягиваются пропорционально, поэтому пределы считаются от их родного размера.
+function BuildSize.limits(shape: BuildConfig.Shape, basicMin: number?): (Vector3, Vector3)
+	local ceiling = Vector3.one * BuildConfig.MaxBlockSize
+	if shape.prefab then
+		return shape.size * BuildConfig.PrefabMinScale, (shape.size * BuildConfig.PrefabMaxScale):Min(ceiling)
+	end
+	return Vector3.one * (basicMin or BuildConfig.MinBlockSize), ceiling
+end
+
+-- Сервер: размер от клиента — конечный Vector3 в пределах [minSize, maxSize] по каждой оси.
+function BuildSize.isValid(value: unknown, minSize: Vector3, maxSize: Vector3): boolean
 	if typeof(value) ~= "Vector3" then
 		return false
 	end
 	local size = value :: Vector3
-	for _, c in { size.X, size.Y, size.Z } do
-		if c ~= c or c < minSize - EPSILON or c > BuildConfig.MaxBlockSize + EPSILON then
-			return false
-		end
+	if size.X ~= size.X or size.Y ~= size.Y or size.Z ~= size.Z then
+		return false -- NaN
 	end
-	return true
+	local low, high = minSize - Vector3.one * EPSILON, maxSize + Vector3.one * EPSILON
+	return size.X >= low.X
+		and size.Y >= low.Y
+		and size.Z >= low.Z
+		and size.X <= high.X
+		and size.Y <= high.Y
+		and size.Z <= high.Z
 end
 
 -- Кнопки −/+: к ближайшему кратному шага сетки в нужную сторону (при сетке «0» — мелкий шаг).
-function BuildSize.nudge(value: number, gridStep: number, direction: number, minSize: number): number
+function BuildSize.nudge(value: number, gridStep: number, direction: number, minSize: number, maxSize: number?): number
 	local step = if gridStep > 0 then gridStep else BuildConfig.FreeSizeStep
 	local ratio = value / step
 	local nextValue = if direction > 0
 		then (math.floor(ratio + EPSILON) + 1) * step
 		else (math.ceil(ratio - EPSILON) - 1) * step
-	return BuildSize.clamp(nextValue, minSize)
+	return BuildSize.clamp(nextValue, minSize, maxSize)
 end
 
 -- Текст из поля ввода; запятая допускается как десятичный разделитель.

@@ -51,39 +51,43 @@ local function adopt(union: BasePart, original: BasePart)
 	union.Material = original.Material
 	union.Color = original.Color
 	union.Reflectance = original.Reflectance
-	-- Скрижали с граней исходного блока переезжают на результат.
-	for _, child in original:GetChildren() do
-		if child:GetAttribute(BuildConfig.Attributes.TabletId) ~= nil then
-			child.Parent = union
-		end
-	end
 	if union:IsA("UnionOperation") then
 		-- Стенки среза красим цветом блока, а не цветом резака.
 		union.UsePartColor = true
 	end
+	-- Всё, что висело на исходной детали (скрижали, свет и пламя светильника), переезжает на результат.
+	for _, child in original:GetChildren() do
+		child.Parent = union
+	end
 end
 
--- Вырезает коробку (cutterCFrame, cutterSize) из каждого блока targets.
--- folder — папка Blocks участка: результат кладётся туда же, исходный блок удаляется.
-function BlockCarver.carve(targets: { BasePart }, cutterCFrame: CFrame, cutterSize: Vector3, folder: Instance): CarveResult
+-- Вырезает коробку (cutterCFrame, cutterSize) из каждой детали targets.
+-- Цель — одиночный блок или деталь составной модели: результат CSG встаёт на место
+-- исходной детали в том же родителе (папка Blocks или Model), поэтому модель остаётся цельной.
+function BlockCarver.carve(targets: { BasePart }, cutterCFrame: CFrame, cutterSize: Vector3): CarveResult
 	local result: CarveResult = { carved = 0, removed = 0, failed = 0 }
 	local cutter = makeCutter(cutterCFrame, cutterSize)
 	cutter.Parent = workspace
 
 	for _, target in targets do
-		if target.Parent ~= folder then
-			continue -- блок уже удалили
+		local parent = target.Parent
+		if not parent then
+			continue -- деталь уже удалили
 		end
 
-		-- Резак накрывает блок целиком: от блока ничего не останется — просто удаляем его
-		-- (SubtractAsync с пустым результатом всё равно вернул бы ошибку).
+		-- Резак накрыл деталь целиком: вычитать нечего (SubtractAsync вернул бы пустоту
+		-- и бросил ошибку), просто удаляем её.
 		if BuildGrid.isBoxInside(target.CFrame, target.Size, cutter.CFrame, cutter.Size) then
 			target:Destroy()
 			result.removed += 1
+			-- От составной модели ничего не осталось — убираем и пустую оболочку.
+			if parent:IsA("Model") and #BuildGrid.blockParts(parent) == 0 then
+				parent:Destroy()
+			end
 			continue
 		end
 
-		-- Срез в материале и цвете самого блока.
+		-- Цвет и материал резака задают вид стенок выреза — делаем их как у детали.
 		cutter.Material = target.Material
 		cutter.Color = target.Color
 
@@ -99,10 +103,10 @@ function BlockCarver.carve(targets: { BasePart }, cutterCFrame: CFrame, cutterSi
 			warn("[BlockCarver] SubtractAsync не справился:", union)
 			result.failed += 1
 		elseif typeof(union) == "Instance" and union:IsA("BasePart") then
-			-- SubtractAsync уступает выполнение: за это время блок могли удалить.
-			if target.Parent == folder then
+			-- Пока шёл CSG, деталь могли снести или перенести в другое место иерархии.
+			if target.Parent == parent then
 				adopt(union, target)
-				union.Parent = folder
+				union.Parent = parent
 				target:Destroy()
 				result.carved += 1
 			else

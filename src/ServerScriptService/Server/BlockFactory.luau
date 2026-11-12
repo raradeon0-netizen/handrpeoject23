@@ -29,7 +29,7 @@ local function createBasic(shapeId: string, size: Vector3, factionId: string, cf
 	return part
 end
 
--- size — свой размер базовой формы (составные блоки всегда строятся в размере из библиотеки).
+-- size — свой размер формы (составные блоки растягиваются пропорционально).
 function BlockFactory.create(
 	shapeId: string,
 	factionId: string,
@@ -44,7 +44,7 @@ function BlockFactory.create(
 
 	local block: Instance?
 	if shape.prefab then
-		block = BlockLibrary.buildModel(shapeId, factionId, cframe)
+		block = BlockLibrary.buildModel(shapeId, factionId, cframe, size)
 	else
 		block = createBasic(shapeId, size or shape.size, factionId, cframe)
 	end

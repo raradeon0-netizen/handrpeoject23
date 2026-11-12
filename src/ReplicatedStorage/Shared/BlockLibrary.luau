@@ -10,6 +10,7 @@
 --   Accent — золото (бронза), Detail — цветная вставка (бирюза Египта, порфир Рима, синь Греции).
 
 local BuildConfig = require(script.Parent.BuildConfig)
+local LightEffects = require(script.Parent.LightEffects)
 
 export type Role = "Main" | "Trim" | "Accent" | "Detail"
 export type PieceKind = "Block" | "Wedge" | "CornerWedge" | "Cylinder"
@@ -22,6 +23,7 @@ export type Piece = {
 	shade: number?, -- множитель яркости цвета роли (оттенки отдельных камней)
 	material: Enum.Material?, -- свой материал вместо материала роли
 	color: Color3?, -- свой цвет вместо цвета роли
+	effect: string?, -- id эффекта светильника из LightEffects (свет, пламя, искры)
 }
 
 export type Box = {
@@ -549,7 +551,7 @@ local function ornateCube(_factionId: string?): { Piece }
 end
 
 -- ===== Каменная кладка: стены и дороги =====
--- Геометрию этих префабов проверяет tools/masonry.py check (границы формы и совпадающие грани).
+-- Геометрию этих префабов проверяет tools/prefabs.py check (границы формы и совпадающие грани).
 
 local BRICK_SHADES = { 1, 0.93, 1.05, 0.97 }
 
@@ -692,7 +694,117 @@ local function ruinWall(_factionId: string?): { Piece }
 	return list
 end
 
+-- ===== Освещение =====
+-- Светящаяся деталь несёт effect — по нему LightEffects вешает свет, пламя и искры.
+-- Геометрию проверяет tools/prefabs.py check.
+
+local IRON = Color3.fromRGB(58, 54, 52)
+local BRONZE = Color3.fromRGB(140, 98, 52)
+local WOOD = Color3.fromRGB(96, 62, 36)
+local CHARRED = Color3.fromRGB(44, 32, 28)
+local EMBER = Color3.fromRGB(255, 140, 50)
+local CRYSTAL = Color3.fromRGB(255, 205, 90)
+
+-- Меняет вид последней добавленной детали: свой материал, цвет и эффект светильника.
+local function restyle(list: { Piece }, material: Enum.Material?, color: Color3?, effect: string?)
+	local piece = list[#list]
+	piece.material = material
+	piece.color = color
+	piece.effect = effect
+end
+
+-- Настенный факел 1x4x2: бронзовая пластина прижата к стене (сторона -Z), от неё идёт
+-- железный кронштейн с чашей, в котором стоит наклонённая от стены деревянная рукоять с углями.
+local function wallTorch(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	stone(list, "Trim", Vector3.new(1, 2, 0.2), CFrame.new(0, -1, -0.9), nil, Enum.Material.Metal, BRONZE)
+	block(list, "Accent", 0.3, 0.12, 0.08, 0, -0.3, -0.77) -- заклёпки пластины
+	block(list, "Accent", 0.3, 0.12, 0.08, 0, -1.7, -0.77)
+	stone(list, "Trim", Vector3.new(0.2, 0.2, 0.7), CFrame.new(0, -0.9, -0.45), nil, Enum.Material.Metal, IRON)
+
+	local handle = CFrame.new(0, 0, 0.1) * CFrame.Angles(math.rad(20), 0, 0)
+	stone(list, "Main", Vector3.new(0.3, 2.4, 0.3), handle, nil, Enum.Material.Wood, WOOD)
+	stone(list, "Trim", Vector3.new(0.45, 0.2, 0.45), handle * CFrame.new(0, -0.958, 0), nil, Enum.Material.Metal, IRON)
+	stone(list, "Trim", Vector3.new(0.9, 0.12, 0.9), CFrame.new(0, 1.05, 0.55), nil, Enum.Material.Metal, IRON) -- чаша
+	stone(list, "Main", Vector3.new(0.5, 0.6, 0.5), handle * CFrame.new(0, 1.4, 0), nil, Enum.Material.Fabric, CHARRED)
+	stone(list, "Accent", Vector3.new(0.36, 0.25, 0.36), handle * CFrame.new(0, 1.8, 0), nil, Enum.Material.Neon, EMBER)
+	restyle(list, Enum.Material.Neon, EMBER, "Torch")
+	return list
+end
+
+-- Храмовая жаровня 4x4x4: каменное основание, золотой треножник и чаша с тлеющими углями.
+local function brazier(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	block(list, "Trim", 4, 0.5, 4, 0, -1.75, 0)
+	block(list, "Main", 2.4, 0.4, 2.4, 0, -1.3, 0)
+
+	for k = 0, 2 do
+		local angle = math.rad(90 + 120 * k)
+		local x, z = 0.75 * math.cos(angle), 0.75 * math.sin(angle)
+		-- Ножка наклонена верхом к центру чаши.
+		add(
+			list,
+			"Block",
+			"Accent",
+			Vector3.new(0.22, 2.3, 0.22),
+			CFrame.new(x, -0.05, z) * CFrame.Angles(0, math.atan2(-x, -z), 0) * CFrame.Angles(math.rad(10), 0, 0)
+		)
+		-- Куски угля поверх тлеющего слоя.
+		stone(
+			list,
+			"Main",
+			Vector3.new(0.45, 0.26, 0.45),
+			CFrame.new(-0.8 * x, 1.76, -0.8 * z)
+				* CFrame.Angles(0, math.rad(40 * k), 0)
+				* CFrame.Angles(math.rad(12), 0, math.rad(-9)),
+			nil,
+			Enum.Material.Slate,
+			CHARRED
+		)
+	end
+
+	cylinder(list, "Accent", 1.5, 0.12, 0, -0.4, 0) -- обруч между ножками
+	cylinder(list, "Trim", 2.2, 0.4, 0, 0.9, 0) -- дно чаши
+	cylinder(list, "Accent", 3, 0.5, 0, 1.35, 0) -- золотой борт
+	cylinder(list, "Accent", 2.5, 0.2, 0, 1.62, 0) -- тлеющие угли
+	restyle(list, Enum.Material.Neon, EMBER, "Brazier")
+	return list
+end
+
+-- Обелиск-светильник 4x12x4: ступенчатый резной столб с золотыми поясами и цветными
+-- панелями, наверху — золотая чаша с сияющим кристаллом.
+local function obeliskLamp(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	block(list, "Trim", 4, 1, 4, 0, -5.5, 0)
+	block(list, "Main", 3.2, 0.6, 3.2, 0, -4.7, 0)
+	block(list, "Main", 2.4, 3, 2.4, 0, -2.9, 0)
+	block(list, "Main", 2.1, 3, 2.1, 0, 0.1, 0)
+	block(list, "Main", 1.8, 2.4, 1.8, 0, 2.8, 0)
+	block(list, "Accent", 2.6, 0.2, 2.6, 0, -1.4, 0)
+	block(list, "Accent", 2.3, 0.2, 2.3, 0, 1.6, 0)
+	for _, side in { -1, 1 } do
+		block(list, "Detail", 1.2, 1.8, 0.06, 0, -2.9, side * 1.21)
+		block(list, "Detail", 0.06, 1.8, 1.2, side * 1.21, -2.9, 0)
+	end
+	block(list, "Trim", 2.6, 0.4, 2.6, 0, 4.2, 0)
+	cylinder(list, "Accent", 3, 0.5, 0, 4.65, 0)
+	stone(
+		list,
+		"Accent",
+		Vector3.new(0.8, 0.8, 0.8),
+		CFrame.new(0, 5.3, 0) * CFrame.Angles(math.rad(45), 0, math.rad(45)),
+		nil,
+		Enum.Material.Neon,
+		CRYSTAL
+	)
+	restyle(list, Enum.Material.Neon, CRYSTAL, "Crystal")
+	return list
+end
+
 local PREFABS: { [string]: Prefab } = {
+	WallTorch = { build = wallTorch, collision = "bounds" },
+	Brazier = { build = brazier, collision = "bounds" },
+	ObeliskLamp = { build = obeliskLamp, collision = "bounds" },
 	BrickWall = { build = brickWall, collision = "bounds" },
 	CobbleRoad = { build = cobbleRoad, collision = "bounds" },
 	MosaicRoad = { build = mosaicRoad, collision = "bounds" },
@@ -726,7 +838,7 @@ end
 local pieceCache: { [string]: { Piece } } = {}
 
 -- Детали формы. Для простых форм (Блок, Стена, ...) — одна коробка размера формы.
-function BlockLibrary.getPieces(shapeId: string, factionId: string?): { Piece }
+local function basePieces(shapeId: string, factionId: string?): { Piece }
 	local key = shapeId .. "|" .. (factionId or "")
 	local cached = pieceCache[key]
 	if cached then
@@ -750,7 +862,7 @@ end
 local collisionCache: { [string]: { Box } } = {}
 
 -- Коробки для проверки пересечений при установке (относительно центра формы).
-function BlockLibrary.getCollisionBoxes(shapeId: string): { Box }
+local function baseBoxes(shapeId: string): { Box }
 	local cached = collisionCache[shapeId]
 	if cached then
 		return cached
@@ -763,7 +875,7 @@ function BlockLibrary.getCollisionBoxes(shapeId: string): { Box }
 	local boxes: { Box } = {}
 	local prefab = PREFABS[shapeId]
 	if prefab and prefab.collision == "pieces" then
-		for _, piece in BlockLibrary.getPieces(shapeId, nil) do
+		for _, piece in basePieces(shapeId, nil) do
 			table.insert(boxes, { cframe = piece.cframe, size = piece.size })
 		end
 	else
@@ -799,9 +911,62 @@ function BlockLibrary.getPalette(factionId: string?): BuildConfig.Palette
 	return (if factionId then BuildConfig.FactionPalettes[factionId] else nil) or BuildConfig.DefaultPalette
 end
 
+-- Растягивает детали префаба по осям формы. Деталь, повёрнутая на прямой угол, растягивается
+-- точно; у наклонной каждая сторона получает растяжение вдоль своего направления.
+local function scalePieces(pieces: { Piece }, scale: Vector3): { Piece }
+	local result: { Piece } = table.create(#pieces)
+	for index, piece in pieces do
+		local rotation = piece.cframe.Rotation
+		local copy = table.clone(piece)
+		copy.size = Vector3.new(
+			piece.size.X * (rotation.XVector * scale).Magnitude,
+			piece.size.Y * (rotation.YVector * scale).Magnitude,
+			piece.size.Z * (rotation.ZVector * scale).Magnitude
+		)
+		copy.cframe = CFrame.new(piece.cframe.Position * scale) * rotation
+		result[index] = copy
+	end
+	return result
+end
+
+local function isCustomSize(shape: BuildConfig.Shape?, size: Vector3?): boolean
+	return shape ~= nil and size ~= nil and (size - shape.size).Magnitude > 1e-3
+end
+
+-- Детали формы. size — свой размер: базовая форма становится одним боксом этого размера,
+-- составная растягивается пропорционально от родного размера.
+function BlockLibrary.getPieces(shapeId: string, factionId: string?, size: Vector3?): { Piece }
+	local shape = BuildConfig.Shapes[shapeId]
+	if not shape or not size or not isCustomSize(shape, size) then
+		return basePieces(shapeId, factionId)
+	end
+	if not PREFABS[shapeId] then
+		local box: Piece = { kind = "Block", role = "Main", size = size, cframe = CFrame.identity }
+		return { box }
+	end
+	return scalePieces(basePieces(shapeId, factionId), size / shape.size)
+end
+
+-- Коробки для проверки пересечений при установке (с учётом своего размера формы).
+function BlockLibrary.getCollisionBoxes(shapeId: string, size: Vector3?): { Box }
+	local shape = BuildConfig.Shapes[shapeId]
+	if not shape or not size or not isCustomSize(shape, size) then
+		return baseBoxes(shapeId)
+	end
+	local prefab = PREFABS[shapeId]
+	if prefab and prefab.collision == "pieces" then
+		local boxes: { Box } = {}
+		for _, piece in BlockLibrary.getPieces(shapeId, nil, size) do
+			table.insert(boxes, { cframe = piece.cframe, size = piece.size })
+		end
+		return boxes
+	end
+	return { { cframe = CFrame.identity, size = size } }
+end
+
 -- Собирает закреплённую модель префаба в мире: центр формы = cframe.
-function BlockLibrary.buildModel(shapeId: string, factionId: string?, cframe: CFrame): Model?
-	local pieces = BlockLibrary.getPieces(shapeId, factionId)
+function BlockLibrary.buildModel(shapeId: string, factionId: string?, cframe: CFrame, size: Vector3?): Model?
+	local pieces = BlockLibrary.getPieces(shapeId, factionId, size)
 	if #pieces == 0 then
 		return nil
 	end
@@ -823,6 +988,10 @@ function BlockLibrary.buildModel(shapeId: string, factionId: string?, cframe: CF
 		end
 		part.Material = piece.material or look.material
 		part.Color = color
+		local effect = piece.effect
+		if effect then
+			LightEffects.apply(part, effect)
+		end
 		part.Anchored = true
 		part.CanCollide = true
 		part.CFrame = cframe * piece.cframe

@@ -26,6 +26,7 @@ local UserInputService = game:GetService("UserInputService")
 
 local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
+local BuildSize = require(ReplicatedStorage.Shared.BuildSize)
 local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 local BlockCatalog = require(ReplicatedStorage.Shared.BlockCatalog)
 local PaintCatalog = require(ReplicatedStorage.Shared.PaintCatalog)
@@ -50,6 +51,7 @@ type Remotes = {
 	paint: RemoteEvent,
 	tablet: RemoteEvent,
 	erase: RemoteEvent,
+	light: RemoteEvent,
 	notice: RemoteEvent,
 }
 
@@ -146,11 +148,12 @@ local function shapeName(shapeId: string): string
 	return BlockCatalog.displayName(shapeId)
 end
 
--- Свой размер из панели «Точность» — только для базовых форм и резака (nil = размер формы).
+-- Свой размер из панели «Точность»: базовая форма и резак меняются по осям свободно,
+-- составной блок растягивается пропорционально (nil = сейчас размер не нужен).
 local function activeSize(s: Session): Vector3?
 	local shapeId = s.shapeId
 	local shape = if shapeId then BuildConfig.Shapes[shapeId] else nil
-	if not shape or shape.prefab or (s.mode ~= "Place" and s.mode ~= "Carve") then
+	if not shape or (s.mode ~= "Place" and s.mode ~= "Carve") then
 		return nil
 	end
 	return BuildSettingsController.get().size or shape.size
@@ -167,8 +170,9 @@ local function syncSize(s: Session)
 	BuildSettingsController.setCarveMode(s.mode == "Carve")
 	if isBlade(s) then
 		BuildSettingsController.setSizeTarget(BuildConfig.CutterBladeId, BuildConfig.BladeDefaultSize, true)
-	elseif shapeId and shape and not shape.prefab and (s.mode == "Place" or s.mode == "Carve") then
-		BuildSettingsController.setSizeTarget(shapeId, shape.size, false)
+	elseif shapeId and shape and (s.mode == "Place" or s.mode == "Carve") then
+		local minSize, maxSize = BuildSize.limits(shape)
+		BuildSettingsController.setSizeTarget(shapeId, shape.size, false, minSize, maxSize)
 	else
 		BuildSettingsController.setSizeTarget(nil)
 	end
@@ -270,7 +274,9 @@ local function tryPlace(s: Session)
 	if not cooldownPassed(s, CLIENT_PLACE_COOLDOWN) then
 		return
 	end
-	s.remotes.place:FireServer(shapeId, placement.localCenter, angles.yaw, angles.pitch, angles.roll, activeSize(s))
+	-- Настенная форма могла развернуться к стене сама: тогда шлём её углы, а не углы игрока.
+	local used = placement.angles or angles
+	s.remotes.place:FireServer(shapeId, placement.localCenter, used.yaw, used.pitch, used.roll, activeSize(s))
 end
 
 -- ЛКМ в режиме резака: сервер вычтет форму призрака из задетых блоков (SubtractAsync).
@@ -398,9 +404,9 @@ local function step(dt: number)
 				-- Установка: целиком на плите 200x200 и ни с чем не пересекается.
 				s.canAct = BuildGrid.isInsideArea(s.plot, placement.localCenter, placement.extents)
 					and not (
-						if size
-							then BuildGrid.isBlocked(s.plot, placement.cframe, size)
-							else BuildGrid.isShapeBlocked(s.plot, placement.cframe, shapeId)
+						if shape.prefab
+							then BuildGrid.isShapeBlocked(s.plot, placement.cframe, shapeId, size)
+							else BuildGrid.isBlocked(s.plot, placement.cframe, size or shape.size)
 					)
 				color = if s.canAct then BuildConfig.GhostValidColor else BuildConfig.GhostInvalidColor
 			else
@@ -470,13 +476,14 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	local paint = waitRemote(BuildConfig.PaintRemoteName)
 	local tablet = waitRemote(BuildConfig.TabletRemoteName)
 	local erase = waitRemote(BuildConfig.EraseTabletRemoteName)
+	local light = waitRemote(BuildConfig.ToggleLightRemoteName)
 	local notice = waitRemote(BuildConfig.NoticeRemoteName)
 	local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
 	if not blocks or not place or not remove or not carve or not move then
 		warn("[BuildController] Не найдены Blocks или RemoteEvent'ы, строительство не включено")
 		return false
 	end
-	if not paint or not tablet or not erase or not notice or not playerGui then
+	if not paint or not tablet or not erase or not light or not notice or not playerGui then
 		warn("[BuildController] Не найдены Blocks или RemoteEvent'ы, строительство не включено")
 		return false
 	end
@@ -510,6 +517,7 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 			paint = paint,
 			tablet = tablet,
 			erase = erase,
+			light = light,
 			notice = notice,
 		},
 		previewFolder = previewFolder,
@@ -620,6 +628,12 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 			elseif key == BuildConfig.Keys.QuickDelete then
 				-- X: быстрое удаление своего блока под курсором в любом режиме.
 				tryRemove(s, ownBlockFrom(s, raycastMouse(s)))
+			elseif key == BuildConfig.Keys.ToggleLight then
+				-- L: зажечь или погасить свой светильник под курсором в любом режиме.
+				local block = ownBlockFrom(s, raycastMouse(s))
+				if block then
+					s.remotes.light:FireServer(block)
+				end
 			elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
 				if s.mode == "Place" then
 					tryPlace(s)

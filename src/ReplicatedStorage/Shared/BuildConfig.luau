@@ -6,6 +6,7 @@
 export type Shape = {
 	id: string, -- совпадает с id в BlockCatalog
 	size: Vector3, -- габарит без поворота (X = длина, Y = высота, Z = толщина)
+	wallMount: boolean?, -- на вертикальной грани сам разворачивается тыльной стороной (-Z) к стене
 	prefab: boolean?, -- true = составная модель из BlockLibrary (резаком не используется)
 }
 
@@ -38,6 +39,7 @@ BuildConfig.MoveRemoteName = "MoveBlock"
 BuildConfig.PaintRemoteName = "PaintBlock"
 BuildConfig.TabletRemoteName = "PlaceTablet"
 BuildConfig.EraseTabletRemoteName = "EraseTablet"
+BuildConfig.ToggleLightRemoteName = "ToggleLight"
 BuildConfig.NoticeRemoteName = "BuildNotice" -- сервер -> клиент: короткие сообщения для панели
 
 -- Папки внутри Part участка. Лежат внутри участка, поэтому удаляются вместе с ним.
@@ -79,6 +81,7 @@ BuildConfig.Keys = {
 	TiltZ = Enum.KeyCode.Y, -- наклон вбок (ось Z)
 	QuickDelete = Enum.KeyCode.X, -- удалить свой блок под курсором
 	OpenCatalog = Enum.KeyCode.B, -- открыть/закрыть каталог блоков
+	ToggleLight = Enum.KeyCode.L, -- зажечь/погасить свой светильник под курсором
 }
 
 -- Защита сервера от спама и лимиты.
@@ -86,7 +89,8 @@ BuildConfig.PlaceCooldown = 0.08 -- секунд между установкам
 BuildConfig.RemoveCooldown = 0.05 -- секунд между удалениями
 BuildConfig.CarveCooldown = 0.35 -- CSG — дорогая операция
 BuildConfig.MaxBlocksPerPlayer = 2000
-BuildConfig.MaxCarveTargets = 8 -- сколько блоков максимум прорезает один клик
+BuildConfig.MaxCarveTargets = 24 -- сколько деталей максимум прорезает один клик (у моделей режется каждая)
+BuildConfig.LightCooldown = 0.2 -- секунд между переключениями светильника
 BuildConfig.MoveCooldown = 0.1 -- секунд между переносами
 BuildConfig.PaintCooldown = 0.05 -- секунд между покрасками
 BuildConfig.TabletCooldown = 0.3 -- секунд между скрижалями
@@ -99,6 +103,9 @@ BuildConfig.TabletMinWidth = 1.5
 -- Пользовательский размер базовых блоков и резака (панель «Точность»).
 BuildConfig.MinBlockSize = 0.25
 BuildConfig.MaxBlockSize = 64
+-- Составные блоки растягиваются пропорционально: от четверти до четырёх родных размеров по оси.
+BuildConfig.PrefabMinScale = 0.25
+BuildConfig.PrefabMaxScale = 4
 BuildConfig.FreeSizeStep = 0.05 -- шаг кнопок −/+ при сетке «0»
 
 -- Формы резака: «куб» — выбранная базовая форма, «полоса» — тонкая пластина.
@@ -157,6 +164,11 @@ BuildConfig.Shapes = {
 	RuinWall = { id = "RuinWall", size = Vector3.new(12, 8, 4), prefab = true },
 	CobbleRoad = { id = "CobbleRoad", size = Vector3.new(8, 1, 8), prefab = true },
 	MosaicRoad = { id = "MosaicRoad", size = Vector3.new(8, 1, 8), prefab = true },
+
+	-- Освещение
+	WallTorch = { id = "WallTorch", size = Vector3.new(1, 4, 2), prefab = true, wallMount = true },
+	Brazier = { id = "Brazier", size = Vector3.new(4, 4, 4), prefab = true },
+	ObeliskLamp = { id = "ObeliskLamp", size = Vector3.new(4, 12, 4), prefab = true },
 } :: { [string]: Shape }
 
 -- Базовый материал блоков по фракции: песчаник для Египта, мрамор для Рима и Греции.
@@ -218,6 +230,9 @@ BuildConfig.MoveHighlightColor = Color3.fromRGB(90, 170, 255)
 BuildConfig.PaintHighlightColor = Color3.fromRGB(255, 200, 60)
 BuildConfig.MoveHandlesColor = Color3.fromRGB(255, 200, 60)
 BuildConfig.MovePendingTimeout = 1
+
+-- Тег CollectionService на PointLight светильников: клиент оживляет их мерцанием.
+BuildConfig.FlickerTag = "FlickerLight"
 
 -- Сколько секунд держится сообщение на панели «Точность».
 BuildConfig.NoticeDuration = 3

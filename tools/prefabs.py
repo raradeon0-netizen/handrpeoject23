@@ -1,10 +1,10 @@
-"""Masonry prefabs of BlockLibrary: generator for the irregular stone tables and a geometry check.
+"""Masonry and lighting prefabs of BlockLibrary: stone table generator and a geometry check.
 
-  python3 tools/masonry.py gen     print the COBBLES / RUIN_STONES Luau tables (seeded, reproducible)
-  python3 tools/masonry.py check   validate the four masonry prefabs against BlockLibrary.luau
+  python3 tools/prefabs.py gen     print the COBBLES / RUIN_STONES Luau tables (seeded, reproducible)
+  python3 tools/prefabs.py check   validate the masonry and lighting prefabs against BlockLibrary.luau
 
-The check reads the stone tables straight from the Luau source and mirrors the two loop-built
-prefabs (brick wall, mosaic road). For every prefab it verifies that all pieces stay inside the
+The check reads the stone tables straight from the Luau source and mirrors the loop-built
+prefabs (brick wall, mosaic road, torch, brazier, obelisk lamp). For every prefab it verifies that all pieces stay inside the
 shape bounds, that the lower corner of the bounds is reached exactly (grid snapping of the Move
 tool aligns that edge) and that no two faces lie on the same plane with overlapping area.
 """
@@ -175,6 +175,63 @@ def ruin_wall(rows):
     return [Piece((11.6, 7.4, 3), (0, -0.2, 0))] + [Piece((r[2], r[3], r[4]), (r[0], r[1], 0)) for r in rows]
 
 
+def compose(origin, angles, offset):
+    """Position of origin * CFrame.Angles(...) * CFrame.new(offset)."""
+    m = rotation(*angles)
+    return tuple(origin[a] + sum(m[a][j] * offset[j] for j in range(3)) for a in range(3))
+
+
+def wall_torch():
+    tilt = (0, 20, 0)
+    origin = (0, 0, 0.1)
+    return [
+        Piece((1, 2, 0.2), (0, -1, -0.9)),
+        Piece((0.3, 0.12, 0.08), (0, -0.3, -0.77)),
+        Piece((0.3, 0.12, 0.08), (0, -1.7, -0.77)),
+        Piece((0.2, 0.2, 0.7), (0, -0.9, -0.45)),
+        Piece((0.3, 2.4, 0.3), origin, tilt),
+        Piece((0.45, 0.2, 0.45), compose(origin, tilt, (0, -0.958, 0)), tilt),
+        Piece((0.9, 0.12, 0.9), (0, 1.05, 0.55)),
+        Piece((0.5, 0.6, 0.5), compose(origin, tilt, (0, 1.4, 0)), tilt),
+        Piece((0.36, 0.25, 0.36), compose(origin, tilt, (0, 1.8, 0)), tilt),
+    ]
+
+
+def brazier():
+    pieces = [Piece((4, 0.5, 4), (0, -1.75, 0)), Piece((2.4, 0.4, 2.4), (0, -1.3, 0))]
+    for k in range(3):
+        angle = math.radians(90 + 120 * k)
+        x, z = 0.75 * math.cos(angle), 0.75 * math.sin(angle)
+        pieces.append(Piece((0.22, 2.3, 0.22), (x, -0.05, z), (math.degrees(math.atan2(-x, -z)), 10, 0)))
+        pieces.append(Piece((0.45, 0.26, 0.45), (-0.8 * x, 1.76, -0.8 * z), (40 * k, 12, -9)))
+    # Вертикальные цилиндры: габарит (диаметр, высота, диаметр).
+    return pieces + [
+        Piece((1.5, 0.12, 1.5), (0, -0.4, 0)),
+        Piece((2.2, 0.4, 2.2), (0, 0.9, 0)),
+        Piece((3, 0.5, 3), (0, 1.35, 0)),
+        Piece((2.5, 0.2, 2.5), (0, 1.62, 0)),
+    ]
+
+
+def obelisk_lamp():
+    pieces = [
+        Piece((4, 1, 4), (0, -5.5, 0)),
+        Piece((3.2, 0.6, 3.2), (0, -4.7, 0)),
+        Piece((2.4, 3, 2.4), (0, -2.9, 0)),
+        Piece((2.1, 3, 2.1), (0, 0.1, 0)),
+        Piece((1.8, 2.4, 1.8), (0, 2.8, 0)),
+        Piece((2.6, 0.2, 2.6), (0, -1.4, 0)),
+        Piece((2.3, 0.2, 2.3), (0, 1.6, 0)),
+    ]
+    for side in (-1, 1):
+        pieces += [Piece((1.2, 1.8, 0.06), (0, -2.9, side * 1.21)), Piece((0.06, 1.8, 1.2), (side * 1.21, -2.9, 0))]
+    return pieces + [
+        Piece((2.6, 0.4, 2.6), (0, 4.2, 0)),
+        Piece((3, 0.5, 3), (0, 4.65, 0)),
+        Piece((0.8, 0.8, 0.8), (0, 5.3, 0), (0, 45, 45)),
+    ]
+
+
 def check():
     source = open(LIBRARY, encoding="utf-8").read()
     prefabs = {
@@ -182,6 +239,9 @@ def check():
         "cobbleRoad": ((8, 1, 8), cobble_road(read_table(source, "COBBLES"))),
         "mosaicRoad": ((8, 1, 8), mosaic_road()),
         "ruinWall": ((12, 8, 4), ruin_wall(read_table(source, "RUIN_STONES"))),
+        "wallTorch": ((1, 4, 2), wall_torch()),
+        "brazier": ((4, 4, 4), brazier()),
+        "obeliskLamp": ((4, 12, 4), obelisk_lamp()),
     }
     failed = False
     for name, (size, pieces) in prefabs.items():

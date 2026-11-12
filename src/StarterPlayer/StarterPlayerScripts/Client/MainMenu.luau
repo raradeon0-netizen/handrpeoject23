@@ -6,8 +6,10 @@
 local Players = game:GetService("Players")
 
 local MenuController = require(script.MenuController)
+local LightFlicker = require(script.LightFlicker)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 
+LightFlicker.start() -- мерцание огня светильников
 MenuController.start(playerGui)

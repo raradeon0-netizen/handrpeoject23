@@ -37,6 +37,7 @@ export type PlacementRequest = {
 
 export type Placement = {
 	cframe: CFrame, -- мировой CFrame фигуры
+	angles: Angles?, -- углы, если фигура развернулась сама (настенный светильник); иначе углы игрока
 	localCenter: Vector3, -- центр в координатах участка (его клиент отправляет серверу)
 	extents: Vector3, -- габариты с учётом поворота (AABB в координатах участка)
 }
@@ -207,7 +208,18 @@ function BuildGrid.computePlacement(req: PlacementRequest): Placement?
 	local plot = req.plot
 	local plotCFrame = plot.CFrame
 	local size = req.size or shape.size
-	local rotation = BuildGrid.makeRotation(req.angles)
+
+	-- Настенная форма на вертикальной грани сама встаёт тыльной стороной (-Z) к стене.
+	local mounted: Angles? = nil
+	if shape.wallMount and not req.inward then
+		local wallNormal = plotCFrame:VectorToObjectSpace(req.hitNormal)
+		if math.abs(wallNormal.Y) < 0.5 then
+			local step = BuildConfig.MinRotationStep
+			local yaw = math.deg(math.atan2(wallNormal.X, wallNormal.Z))
+			mounted = { yaw = (math.round(yaw / step) * step) % 360, pitch = 0, roll = 0 }
+		end
+	end
+	local rotation = BuildGrid.makeRotation(mounted or req.angles)
 	local extents = BuildGrid.getExtents(rotation, size)
 	-- Установка — фигура снаружи грани; резак — утоплен в грань (прорезает внутрь блока).
 	local direction = if req.inward then -1 else 1
@@ -264,6 +276,7 @@ function BuildGrid.computePlacement(req: PlacementRequest): Placement?
 	center = roundVector(center)
 	return {
 		cframe = plotCFrame * CFrame.new(center) * rotation,
+		angles = mounted,
 		localCenter = center,
 		extents = extents,
 	}
@@ -370,8 +383,8 @@ end
 -- То же для любой формы, включая составные: проверяются коробки из BlockLibrary
 -- (у арки — опоры и свод, у лестницы — ступени), поэтому под аркой и над ступенями
 -- можно строить. Каждая коробка уменьшается на тот же допуск касания.
-function BuildGrid.isShapeBlocked(plot: BasePart, cframe: CFrame, shapeId: string): boolean
-	local boxes = BlockLibrary.getCollisionBoxes(shapeId)
+function BuildGrid.isShapeBlocked(plot: BasePart, cframe: CFrame, shapeId: string, size: Vector3?): boolean
+	local boxes = BlockLibrary.getCollisionBoxes(shapeId, size)
 	if #boxes == 0 then
 		return true
 	end
@@ -396,7 +409,12 @@ function BuildGrid.findCarveTargets(plot: BasePart, cframe: CFrame, size: Vector
 	local shrunk = size - Vector3.one * (BuildConfig.OverlapTolerance * 2)
 	local targets: { BasePart } = {}
 	for _, part in BuildGrid.queryBox(cframe, shrunk, { blocks }) do
-		if part.Parent == blocks and part:GetAttribute(BuildConfig.Attributes.OwnerUserId) == ownerUserId then
+		-- Цель — сам блок или деталь составной модели: владельца смотрим у корня в папке Blocks.
+		local root: Instance = part
+		while root.Parent and root.Parent ~= blocks do
+			root = root.Parent
+		end
+		if root.Parent == blocks and root:GetAttribute(BuildConfig.Attributes.OwnerUserId) == ownerUserId then
 			table.insert(targets, part)
 		end
 	end

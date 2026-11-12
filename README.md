@@ -14,3 +14,5 @@ adds a `ModuleScript` for any new `.luau` file. Parts, folders and other instanc
 
 - `tools/extract.py <place.rbxlx> src` — dump the scripts of a place file back into `src/`.
 - `tools/inspect.py <place.rbxlx>` — print the instance tree.
+- `tools/prefabs.py check` — verify the geometry of the masonry and lighting prefabs (bounds, coplanar faces);
+  `tools/prefabs.py gen` prints the irregular stone tables used by the cobblestone road and ruin wall.

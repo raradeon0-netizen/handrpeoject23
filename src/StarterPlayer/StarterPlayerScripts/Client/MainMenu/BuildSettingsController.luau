@@ -43,6 +43,8 @@ local sizes: { [string]: Vector3 } = {}
 local sizeKey: string? = nil
 local sizeDefault: Vector3? = nil
 local sizeLockZ = false
+local sizeMin = Vector3.one * BuildConfig.MinBlockSize
+local sizeMax = Vector3.one * BuildConfig.MaxBlockSize
 
 local AXIS_NAMES = { "Ширина X", "Высота Y", "Длина Z" }
 local LOCKED_AXIS_NAME = "Толщина Z"
@@ -113,7 +115,7 @@ local function refresh()
 	v.cutterRow.Visible = carveMode
 
 	local size = current.size
-	v.sizeLabel.Text = if size then "Размер (студы)" else "Размер: выберите базовую форму или резак"
+	v.sizeLabel.Text = if size then "Размер (студы)" else "Размер: выберите форму или резак"
 	v.sizeResetButton.Visible = size ~= nil
 	for axis, row in v.sizeRows do
 		local locked = axis == 3 and sizeLockZ
@@ -133,7 +135,7 @@ local function setAxis(axis: number, value: number)
 		refresh()
 		return
 	end
-	local clamped = BuildSize.clamp(value, BuildConfig.MinBlockSize)
+	local clamped = BuildSize.clamp(value, axisOf(sizeMin, axis), axisOf(sizeMax, axis))
 	sizes[key] = Vector3.new(
 		if axis == 1 then clamped else size.X,
 		if axis == 2 then clamped else size.Y,
@@ -147,7 +149,8 @@ end
 local function nudgeAxis(axis: number, direction: number)
 	local size = current.size
 	if size then
-		setAxis(axis, BuildSize.nudge(axisOf(size, axis), current.gridStep, direction, BuildConfig.MinBlockSize))
+		local low, high = axisOf(sizeMin, axis), axisOf(sizeMax, axis)
+		setAxis(axis, BuildSize.nudge(axisOf(size, axis), current.gridStep, direction, low, high))
 	end
 end
 
@@ -277,7 +280,16 @@ end
 -- Чей размер сейчас редактируется: key — id формы или полосы резака (у каждой свой запомненный
 -- размер), defaultSize — размер по умолчанию, lockZ — ось Z фиксирована (толщина полосы).
 -- key = nil — размер недоступен (составной блок, снос, перенос).
-function BuildSettingsController.setSizeTarget(key: string?, defaultSize: Vector3?, lockZ: boolean?)
+-- minSize / maxSize — пределы по осям (по умолчанию — пределы базового блока).
+function BuildSettingsController.setSizeTarget(
+	key: string?,
+	defaultSize: Vector3?,
+	lockZ: boolean?,
+	minSize: Vector3?,
+	maxSize: Vector3?
+)
+	sizeMin = minSize or Vector3.one * BuildConfig.MinBlockSize
+	sizeMax = maxSize or Vector3.one * BuildConfig.MaxBlockSize
 	sizeKey = key
 	sizeDefault = defaultSize
 	sizeLockZ = lockZ == true
