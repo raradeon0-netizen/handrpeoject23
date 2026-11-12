@@ -7,6 +7,7 @@
 -- Шаг сетки (4 / 1 / 0.25 / свободно) — удобство клиента, сервер его не навязывает:
 -- сервер отвечает за то, ГДЕ можно строить.
 
+local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -40,6 +41,7 @@ local paintRemote = makeRemote(BuildConfig.PaintRemoteName)
 local tabletRemote = makeRemote(BuildConfig.TabletRemoteName)
 local eraseRemote = makeRemote(BuildConfig.EraseTabletRemoteName)
 local lightRemote = makeRemote(BuildConfig.ToggleLightRemoteName)
+local effectRemote = makeRemote(BuildConfig.EffectRemoteName)
 local noticeRemote = makeRemote(BuildConfig.NoticeRemoteName)
 
 type ShapeRequest = {
@@ -66,6 +68,28 @@ local function cooldownPassed(player: Player, action: string, cooldown: number):
 	end
 	timers[action] = now
 	return true
+end
+
+-- Сообщает всем клиентам о действии: они сами играют анимацию, частицы и звук (BuildEffects).
+local function emit(kind: string, player: Player, instance: Instance?, cframe: CFrame?, size: Vector3?)
+	effectRemote:FireAllClients(kind, player.UserId, instance, cframe, size)
+end
+
+-- Снос: блок сразу перестаёт участвовать в игре (не мешает стройке, не выбирается,
+-- не попадает в сохранение), а удаляется чуть позже — клиенты успевают показать, как он тает.
+local function retire(block: Instance)
+	block:SetAttribute(BuildConfig.Attributes.OwnerUserId, nil)
+	block:SetAttribute(BuildConfig.Attributes.ShapeId, nil)
+	local parts = block:GetDescendants()
+	table.insert(parts, block)
+	for _, part in parts do
+		if part:IsA("BasePart") then
+			part.CanCollide = false
+			part.CanQuery = false
+			part.CanTouch = false
+		end
+	end
+	Debris:AddItem(block, BuildConfig.RemoveEffectTime)
 end
 
 local function notify(player: Player, text: string)
@@ -218,6 +242,7 @@ placeRemote.OnServerEvent:Connect(
 			BlockFactory.create(request.shapeId, request.claim.factionId, placement.cframe, player, request.size)
 		if block then
 			block.Parent = request.blocks
+			emit("Place", player, block, placement.cframe, request.size)
 		end
 	end
 )
@@ -266,6 +291,9 @@ carveRemote.OnServerEvent:Connect(
 		local ok, result = pcall(BlockCarver.carve, targets, placement.cframe, request.size)
 		carving[player] = nil
 
+		if ok and result.carved + result.removed > 0 then
+			emit("Carve", player, nil, placement.cframe, request.size)
+		end
 		if not ok then
 			warn("[BuildService] Ошибка вырезания:", result)
 			notify(player, "Не удалось вырезать форму")
@@ -294,7 +322,8 @@ removeRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown)
 		return
 	end
 
-	target:Destroy()
+	emit("Remove", player, target)
+	retire(target)
 end)
 
 -- Шаг 5. Чистим таймеры вышедших игроков (сами блоки удаляются вместе с участком).
@@ -366,6 +395,7 @@ paintRemote.OnServerEvent:Connect(function(player: Player, clicked: unknown, mat
 	local part = findOwnPart(player, clicked)
 	if part then
 		BlockPainter.paint(part, material)
+		emit("Paint", player, part)
 	end
 end)
 
@@ -400,6 +430,7 @@ tabletRemote.OnServerEvent:Connect(
 			return
 		end
 		TabletFactory.place(claim.plot, part, hitPos, hitNormal, tablet)
+		emit("Tablet", player, part)
 	end
 )
 

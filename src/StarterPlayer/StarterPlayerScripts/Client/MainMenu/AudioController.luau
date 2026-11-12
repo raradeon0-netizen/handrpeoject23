@@ -10,6 +10,9 @@
 -- По умолчанию играет «Ancient Paths» (Matthew Cang, альбом The Ambient Works) из официальной
 -- библиотеки Roblox — лицензионная музыка APM Music, бесплатная для всех мест.
 -- Громкость и «без звука» меняются в окне «Настройки» (MenuController).
+--
+-- Здесь же короткие звуковые эффекты (playSfx): установка, вырез, покраска, снос и щелчки
+-- кнопок. Они выключаются в настройках отдельно от музыки.
 
 local SoundService = game:GetService("SoundService")
 local TweenService = game:GetService("TweenService")
@@ -27,12 +30,28 @@ AudioController.VolumeStep = VOLUME_STEP
 
 local changed = Instance.new("BindableEvent")
 
--- Срабатывает при смене громкости или режима «без звука».
+-- Срабатывает при смене громкости, режима «без звука» или переключателя звуковых эффектов.
 AudioController.Changed = changed.Event
 
 local sound: Sound? = nil
 local volume = DEFAULT_VOLUME
 local muted = false
+
+-- Звуковые эффекты строительства и интерфейса — звуки из официальной библиотеки Roblox
+-- (Pro Sound Effects и Roblox). Чтобы заменить звук, вставьте свой "rbxassetid://…" в поле id.
+local SFX: { [string]: { id: string, volume: number } } = {
+	Place = { id = "rbxassetid://9118608146", volume = 0.6 }, -- камень о камень: блок встал на место
+	Carve = { id = "rbxassetid://9119071703", volume = 0.5 }, -- скрежет: резак прошёл по камню
+	Paint = { id = "rbxassetid://9116394545", volume = 0.45 }, -- мягкий перезвон: покраска и скрижаль
+	Remove = { id = "rbxassetid://9118770616", volume = 0.5 }, -- осыпающийся песок: блок снесён
+	Click = { id = "rbxassetid://15675032796", volume = 0.35 }, -- щелчок кнопки интерфейса
+}
+
+-- Высота тона каждый раз немного другая: частые действия не звучат монотонно.
+local PITCH_MIN, PITCH_MAX = 0.95, 1.05
+
+local sfxEnabled = true
+local sfxSounds: { [string]: Sound } = {}
 
 local function apply(info: TweenInfo)
 	local music = sound
@@ -76,6 +95,36 @@ end
 function AudioController.setMuted(value: boolean)
 	muted = value
 	apply(FADE)
+	changed:Fire()
+end
+
+-- Проигрывает звуковой эффект по имени из таблицы SFX (если эффекты не выключены в настройках).
+function AudioController.playSfx(name: string)
+	local spec = SFX[name]
+	if not sfxEnabled or not spec then
+		return
+	end
+	local effect = sfxSounds[name]
+	if not effect then
+		local created = Instance.new("Sound")
+		created.Name = name .. "Sfx"
+		created.SoundId = spec.id
+		created.Volume = spec.volume
+		created.Parent = SoundService
+		sfxSounds[name] = created
+		effect = created
+	end
+	effect.PlaybackSpeed = PITCH_MIN + math.random() * (PITCH_MAX - PITCH_MIN)
+	SoundService:PlayLocalSound(effect) -- играет копию: звуки могут накладываться друг на друга
+end
+
+function AudioController.isSfxEnabled(): boolean
+	return sfxEnabled
+end
+
+-- Звуки стройки и интерфейса выключаются отдельно от музыки.
+function AudioController.setSfxEnabled(value: boolean)
+	sfxEnabled = value
 	changed:Fire()
 end
 

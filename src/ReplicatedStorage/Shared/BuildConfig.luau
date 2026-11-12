@@ -40,6 +40,7 @@ BuildConfig.PaintRemoteName = "PaintBlock"
 BuildConfig.TabletRemoteName = "PlaceTablet"
 BuildConfig.EraseTabletRemoteName = "EraseTablet"
 BuildConfig.ToggleLightRemoteName = "ToggleLight"
+BuildConfig.EffectRemoteName = "BuildEffect" -- сервер -> все клиенты: анимации и звуки действий
 BuildConfig.SaveRemoteName = "PlotSave" -- клиент -> сервер: "Save" / "Load"; сервер -> клиент: статус
 BuildConfig.NoticeRemoteName = "BuildNotice" -- сервер -> клиент: короткие сообщения для панели
 
@@ -92,6 +93,7 @@ BuildConfig.CarveCooldown = 0.35 -- CSG — дорогая операция
 BuildConfig.MaxBlocksPerPlayer = 2000
 BuildConfig.MaxCarveTargets = 24 -- сколько деталей максимум прорезает один клик (у моделей режется каждая)
 BuildConfig.LightCooldown = 0.2 -- секунд между переключениями светильника
+BuildConfig.RemoveEffectTime = 0.25 -- секунд снесённый блок «тает» у клиентов до удаления
 
 -- Облачное сохранение участка (SaveManager).
 BuildConfig.SaveStoreName = "AncientWorldPlots_v1"

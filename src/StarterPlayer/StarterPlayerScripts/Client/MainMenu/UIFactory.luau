@@ -4,6 +4,7 @@
 
 local TweenService = game:GetService("TweenService")
 
+local AudioController = require(script.Parent.AudioController)
 local Theme = require(script.Parent.Theme)
 
 local UIFactory = {}
@@ -89,6 +90,9 @@ function UIFactory.button(name: string, text: string, color: Color3, parent: Ins
 			TweenService:Create(stroke, Theme.HoverTweenInfo, { Transparency = strokeTransparency }):Play()
 		end
 	end
+	button.Activated:Connect(function()
+		AudioController.playSfx("Click")
+	end)
 	button.MouseEnter:Connect(function()
 		hover(hoverColor, 0)
 	end)

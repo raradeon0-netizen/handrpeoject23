@@ -25,6 +25,8 @@ export type View = {
 	volumePlus: TextButton,
 	volumeFill: Frame, -- заполнение шкалы громкости
 	muteButton: TextButton,
+	sfxButton: TextButton, -- «Звуки стройки (SFX): Вкл / Выкл»
+	animationButton: TextButton, -- «Анимации стройки: Вкл / Выкл»
 	pauseScreen: Frame, -- меню паузы (во время игры)
 	resumeButton: TextButton,
 	pauseSettingsButton: TextButton,
@@ -109,7 +111,7 @@ function MenuView.build(playerGui: PlayerGui): View
 	-- Шаг 4. Окно настроек: выбор размера интерфейса и кнопка «Закрыть».
 	local settingsScreen = UIFactory.screen("SettingsScreen", gui)
 	settingsScreen.Active = true -- открытое из паузы окно не пропускает клики в мир
-	local settingsPanel = UIFactory.panel("Panel", UDim2.fromOffset(480, 410), settingsScreen)
+	local settingsPanel = UIFactory.panel("Panel", UDim2.fromOffset(480, 510), settingsScreen)
 	UIFactory.verticalList(settingsPanel, 16)
 
 	local settingsTitle = UIFactory.label("Title", "Настройки", 36, settingsPanel)
@@ -211,10 +213,21 @@ function MenuView.build(playerGui: PlayerGui): View
 	muteButton.TextSize = 18
 	muteButton.LayoutOrder = 4
 
+	-- Переключатели: звуки стройки (отдельно от музыки) и анимации стройки.
+	local sfxButton = UIFactory.button("SfxButton", "", Theme.SecondaryButtonColor, settingsPanel)
+	sfxButton.Size = UDim2.new(0.85, 0, 0, 38)
+	sfxButton.TextSize = 19
+	sfxButton.LayoutOrder = 6
+
+	local animationButton = UIFactory.button("AnimationButton", "", Theme.SecondaryButtonColor, settingsPanel)
+	animationButton.Size = UDim2.new(0.85, 0, 0, 38)
+	animationButton.TextSize = 19
+	animationButton.LayoutOrder = 7
+
 	local closeSettingsButton = UIFactory.button("CloseButton", "Закрыть", Theme.PrimaryButtonColor, settingsPanel)
 	closeSettingsButton.Size = UDim2.new(0.5, 0, 0, 44)
 	closeSettingsButton.TextSize = 22
-	closeSettingsButton.LayoutOrder = 6
+	closeSettingsButton.LayoutOrder = 8
 
 	-- Шаг 5. Добавляем GUI в PlayerGui последним, когда иерархия уже собрана.
 	-- Меню паузы (во время игры): продолжить, настройки, выход в главное меню.
@@ -259,6 +272,8 @@ function MenuView.build(playerGui: PlayerGui): View
 		volumePlus = volumePlus,
 		volumeFill = volumeFill,
 		muteButton = muteButton,
+		sfxButton = sfxButton,
+		animationButton = animationButton,
 		pauseScreen = pauseScreen,
 		resumeButton = resumeButton,
 		pauseSettingsButton = pauseSettingsButton,

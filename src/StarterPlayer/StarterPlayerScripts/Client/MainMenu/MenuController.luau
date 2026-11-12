@@ -8,6 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 
 local MenuView = require(script.Parent.MenuView)
 local AudioController = require(script.Parent.AudioController)
+local BuildEffects = require(script.Parent.BuildEffects)
 local TopHudController = require(script.Parent.TopHudController)
 local BuildCameraController = require(script.Parent.BuildCameraController)
 local BuildHudController = require(script.Parent.BuildHudController)
@@ -147,6 +148,30 @@ function MenuController.start(playerGui: PlayerGui)
 	end)
 	AudioController.Changed:Connect(refreshVolume)
 	refreshVolume()
+
+	-- ===== Звуки и анимации стройки (окно «Настройки») =====
+	local function refreshToggles()
+		local sfxOn = AudioController.isSfxEnabled()
+		local animationsOn = BuildEffects.isEnabled()
+		view.sfxButton.Text = "Звуки стройки (SFX): " .. (if sfxOn then "Вкл" else "Выкл")
+		view.animationButton.Text = "Анимации стройки: " .. (if animationsOn then "Вкл" else "Выкл")
+		for button, on in { [view.sfxButton] = sfxOn, [view.animationButton] = animationsOn } do
+			local stroke = button:FindFirstChildOfClass("UIStroke")
+			if stroke then
+				stroke.Color = if on then Theme.SelectedStroke else Theme.PanelStroke
+			end
+		end
+	end
+
+	view.sfxButton.Activated:Connect(function()
+		AudioController.setSfxEnabled(not AudioController.isSfxEnabled())
+		refreshToggles()
+	end)
+	view.animationButton.Activated:Connect(function()
+		BuildEffects.setEnabled(not BuildEffects.isEnabled())
+		refreshToggles()
+	end)
+	refreshToggles()
 
 	-- ===== Меню паузы =====
 	-- Escape занят меню Roblox, поэтому пауза — кнопка «Меню» в углу и клавиши из PAUSE_KEYS.
