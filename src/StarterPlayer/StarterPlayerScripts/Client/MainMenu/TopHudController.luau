@@ -33,6 +33,11 @@ local pauseRequested = Instance.new("BindableEvent")
 -- Нажата кнопка «Меню»: меню паузы открывает MenuController.
 TopHudController.PauseRequested = pauseRequested.Event
 
+local walkRequested = Instance.new("BindableEvent")
+
+-- Нажата кнопка «Режим»: стройку и прогулку переключает WalkController.
+TopHudController.WalkRequested = walkRequested.Event
+
 local view: TopHudView.View? = nil
 local visible = false
 local statusToken = 0
@@ -157,8 +162,22 @@ function TopHudController.attach(playerGui: PlayerGui)
 		pauseRequested:Fire()
 	end)
 
+	created.walkButton.Activated:Connect(function()
+		walkRequested:Fire()
+	end)
+	TopHudController.setWalkMode(false)
+
 	TimeOfDayController.set(TimeOfDayController.DefaultId, true)
 	refreshTime()
+end
+
+-- Подпись и подсветка кнопки режима.
+function TopHudController.setWalkMode(walking: boolean)
+	local v = view
+	if v then
+		v.walkButton.Text = if walking then "Режим: Прогулка (V)" else "Режим: Стройка (V)"
+		setSelected(v.walkButton, walking)
+	end
 end
 
 function TopHudController.show()

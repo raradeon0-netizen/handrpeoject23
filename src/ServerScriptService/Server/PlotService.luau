@@ -35,7 +35,12 @@ local resizePlot = Instance.new("RemoteFunction")
 resizePlot.Name = PlotConfig.ResizeRemoteName
 resizePlot.Parent = ReplicatedStorage.Shared
 
+local setWalkMode = Instance.new("RemoteFunction")
+setWalkMode.Name = PlotConfig.WalkRemoteName
+setWalkMode.Parent = ReplicatedStorage.Shared
+
 local busyPlayers: { [Player]: boolean } = {} -- защита от повторных запросов
+local walking: { [Player]: boolean } = {} -- игрок гуляет по участку (персонаж виден)
 
 -- Полная очистка игрока: участок, закрепление и слот. Безопасно вызывать повторно.
 local function releasePlayer(player: Player)
@@ -92,6 +97,7 @@ end
 -- Шаг 3. Обработчик сигнала из меню. Возвращаемое значение получает клиент:
 -- true = всё готово, false = меню нужно вернуть на экран выбора.
 selectFaction.OnServerInvoke = function(player: Player, factionId: unknown): boolean
+	walking[player] = nil -- вход на участок всегда начинается в режиме стройки
 	-- Данным от клиента верить нельзя: проверяем тип и существование фракции.
 	if typeof(factionId) ~= "string" then
 		return false
@@ -119,6 +125,27 @@ selectFaction.OnServerInvoke = function(player: Player, factionId: unknown): boo
 end
 
 -- Шаг 4. Игрок вышел: удаляем участок и освобождаем слот для следующих.
+-- Режим прогулки: true — показать персонажа и поставить у входа на участок,
+-- false — снова спрятать и вернуть в центр (режим стройки).
+setWalkMode.OnServerInvoke = function(player: Player, value: unknown): boolean
+	local claim = PlotOwnership.getClaim(player)
+	local character = player.Character
+	if not claim or not character or typeof(value) ~= "boolean" then
+		return false
+	end
+	if value then
+		if not PlotTeleporter.toWalkSpot(player, claim.plot) then
+			return false
+		end
+		CharacterHider.show(character)
+		walking[player] = true
+	else
+		walking[player] = nil
+		placeOnPlot(player, claim.plot)
+	end
+	return true
+end
+
 -- Смена размера плиты из настроек клиента. Возвращает (успех, сообщение, нынешний размер).
 local lastResize: { [Player]: number } = {}
 
@@ -144,6 +171,7 @@ end
 Players.PlayerRemoving:Connect(function(player: Player)
 	busyPlayers[player] = nil
 	lastResize[player] = nil
+	walking[player] = nil
 	releasePlayer(player)
 end)
 
@@ -151,7 +179,10 @@ end)
 local function trackRespawns(player: Player)
 	player.CharacterAdded:Connect(function()
 		local claim = PlotOwnership.getClaim(player)
-		if claim then
+		if claim and walking[player] then
+			-- Гулявший игрок возвращается видимым ко входу на участок.
+			PlotTeleporter.toWalkSpot(player, claim.plot)
+		elseif claim then
 			placeOnPlot(player, claim.plot)
 		end
 	end)

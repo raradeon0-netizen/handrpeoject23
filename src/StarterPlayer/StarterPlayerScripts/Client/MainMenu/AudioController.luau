@@ -52,6 +52,10 @@ local SFX: { [string]: { id: string, volume: number } } = {
 	Paint = { id = "rbxassetid://9116394545", volume = 0.45 }, -- мягкий перезвон: покраска и скрижаль
 	Remove = { id = "rbxassetid://9118770616", volume = 0.5 }, -- осыпающийся песок: блок снесён
 	Click = { id = "rbxassetid://15675032796", volume = 0.35 }, -- щелчок кнопки интерфейса
+	-- Режим прогулки (FootstepController)
+	StepStone = { id = "rbxassetid://9118248653", volume = 0.4 }, -- шаг по камню
+	StepSand = { id = "rbxassetid://9118768256", volume = 0.35 }, -- шаг по песку
+	Land = { id = "rbxassetid://9113474578", volume = 0.3 }, -- приземление после прыжка
 }
 
 -- Высота тона каждый раз немного другая: частые действия не звучат монотонно.

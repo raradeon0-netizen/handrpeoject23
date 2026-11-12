@@ -32,6 +32,7 @@ local Theme = require(script.Parent.Theme)
 export type BuildHud = {
 	show: () -> (), -- плавно выдвинуть панель
 	hide: () -> (), -- плавно убрать панель (и закрыть каталог)
+	setToolbarVisible: (visible: boolean) -> (), -- спрятать / вернуть только нижнюю панель (прогулка)
 	getSelection: () -> (string?, string?), -- (id формы, id инструмента)
 	SelectionChanged: RBXScriptSignal, -- (shapeId: string?, toolId: string?)
 	setFaction: (factionId: string?) -> (), -- отметить ★ «родные» блоки фракции
@@ -140,6 +141,9 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 		fire()
 	end)
 
+	-- Нижняя панель может быть спрятана отдельно от верхней (режим прогулки).
+	local toolbarShown = true
+
 	local function onSlotClicked(slot: BuildSlots.Slot)
 		if slot.kind == "Catalog" then
 			toggleCatalog()
@@ -181,7 +185,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 
 	-- Клавиша B: открыть/закрыть каталог (только пока панель на экране).
 	UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
-		if processed or not visible or UserInputService:GetFocusedTextBox() then
+		if processed or not visible or not toolbarShown or UserInputService:GetFocusedTextBox() then
 			return
 		end
 		if input.KeyCode == BuildConfig.Keys.OpenCatalog then
@@ -190,6 +194,18 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	end)
 
 	-- Шаг 3. Появление и скрытие панели.
+	local function setToolbarVisible(shown: boolean)
+		toolbarShown = shown
+		if not shown then
+			picker.close()
+			PaintMenuController.close()
+		end
+		if visible then
+			local position = if shown then BuildHudView.PanelShownPosition else BuildHudView.PanelHiddenPosition
+			TweenService:Create(view.panel, Theme.TweenInfo, { Position = position }):Play()
+		end
+	end
+
 	local function show()
 		visible = true
 		TopHudController.show()
@@ -218,6 +234,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	return {
 		show = show,
 		hide = hide,
+		setToolbarVisible = setToolbarVisible,
 		getSelection = function(): (string?, string?)
 			return shapeId, toolId
 		end,

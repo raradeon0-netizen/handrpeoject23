@@ -16,6 +16,7 @@ export type View = {
 	loadButton: TextButton,
 	statusLabel: TextLabel,
 	pauseButton: TextButton, -- «Меню» в левом верхнем углу
+	walkButton: TextButton, -- «Режим: Стройка / Прогулка»
 }
 
 local BUTTON_HEIGHT = 28
@@ -94,6 +95,13 @@ function TopHudView.build(playerGui: PlayerGui): View
 	local loadButton =
 		compactButton("Load", "Загрузить", Theme.SecondaryButtonColor, ACTION_BUTTON_WIDTH, nextOrder(), panel)
 
+	local walkSeparator = separator:Clone()
+	walkSeparator.LayoutOrder = nextOrder()
+	walkSeparator.Parent = panel
+
+	-- Переключатель стройка / прогулка (клавиша V).
+	local walkButton = compactButton("Walk", "", Theme.SecondaryButtonColor, 156, nextOrder(), panel)
+
 	-- Статус под панелью: «Сохранено!», «Загружено!» или причина ошибки.
 	local statusLabel = UIFactory.label("Status", "", 16, gui)
 	statusLabel.Font = Theme.BodyFont
@@ -133,6 +141,7 @@ function TopHudView.build(playerGui: PlayerGui): View
 		loadButton = loadButton,
 		statusLabel = statusLabel,
 		pauseButton = pauseButton,
+		walkButton = walkButton,
 	}
 end
 

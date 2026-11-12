@@ -1329,6 +1329,7 @@ local PlotConfig = {}
 -- Имя RemoteFunction, через которую меню сообщает серверу о выбранной фракции.
 -- Сервер создаёт её сам при старте (см. PlotService).
 PlotConfig.RemoteName = "SelectFaction"
+PlotConfig.WalkRemoteName = "SetWalkMode" -- RemoteFunction: true — прогулка, false — стройка
 
 -- Размер участка: 200x200 studs, толщина 2 (как у платформ в Workspace.Platforms).
 PlotConfig.PlotSize = 200
@@ -2628,7 +2629,12 @@ local resizePlot = Instance.new("RemoteFunction")
 resizePlot.Name = PlotConfig.ResizeRemoteName
 resizePlot.Parent = ReplicatedStorage.Shared
 
+local setWalkMode = Instance.new("RemoteFunction")
+setWalkMode.Name = PlotConfig.WalkRemoteName
+setWalkMode.Parent = ReplicatedStorage.Shared
+
 local busyPlayers: { [Player]: boolean } = {} -- защита от повторных запросов
+local walking: { [Player]: boolean } = {} -- игрок гуляет по участку (персонаж виден)
 
 -- Полная очистка игрока: участок, закрепление и слот. Безопасно вызывать повторно.
 local function releasePlayer(player: Player)
@@ -2685,6 +2691,7 @@ end
 -- Шаг 3. Обработчик сигнала из меню. Возвращаемое значение получает клиент:
 -- true = всё готово, false = меню нужно вернуть на экран выбора.
 selectFaction.OnServerInvoke = function(player: Player, factionId: unknown): boolean
+	walking[player] = nil -- вход на участок всегда начинается в режиме стройки
 	-- Данным от клиента верить нельзя: проверяем тип и существование фракции.
 	if typeof(factionId) ~= "string" then
 		return false
@@ -2712,6 +2719,27 @@ selectFaction.OnServerInvoke = function(player: Player, factionId: unknown): boo
 end
 
 -- Шаг 4. Игрок вышел: удаляем участок и освобождаем слот для следующих.
+-- Режим прогулки: true — показать персонажа и поставить у входа на участок,
+-- false — снова спрятать и вернуть в центр (режим стройки).
+setWalkMode.OnServerInvoke = function(player: Player, value: unknown): boolean
+	local claim = PlotOwnership.getClaim(player)
+	local character = player.Character
+	if not claim or not character or typeof(value) ~= "boolean" then
+		return false
+	end
+	if value then
+		if not PlotTeleporter.toWalkSpot(player, claim.plot) then
+			return false
+		end
+		CharacterHider.show(character)
+		walking[player] = true
+	else
+		walking[player] = nil
+		placeOnPlot(player, claim.plot)
+	end
+	return true
+end
+
 -- Смена размера плиты из настроек клиента. Возвращает (успех, сообщение, нынешний размер).
 local lastResize: { [Player]: number } = {}
 
@@ -2737,6 +2765,7 @@ end
 Players.PlayerRemoving:Connect(function(player: Player)
 	busyPlayers[player] = nil
 	lastResize[player] = nil
+	walking[player] = nil
 	releasePlayer(player)
 end)
 
@@ -2744,7 +2773,10 @@ end)
 local function trackRespawns(player: Player)
 	player.CharacterAdded:Connect(function()
 		local claim = PlotOwnership.getClaim(player)
-		if claim then
+		if claim and walking[player] then
+			-- Гулявший игрок возвращается видимым ко входу на участок.
+			PlotTeleporter.toWalkSpot(player, claim.plot)
+		elseif claim then
 			placeOnPlot(player, claim.plot)
 		end
 	end)
@@ -3184,6 +3216,76 @@ function PlotTeleporter.toPlot(player: Player, plot: Part): boolean
 	return true
 end
 
+-- ===== Режим прогулки =====
+
+local WALK_INSET = 12 -- отступ точки входа от края плиты
+local WALK_STEP = 12 -- шаг перебора точек вдоль края
+local WALK_CLEARANCE = Vector3.new(5, 6, 5) -- свободное место, нужное персонажу
+local DROP_FROM = 400 -- с какой высоты ищем верх построек, если свободного места нет
+
+-- Точки для выхода на прогулку (в координатах плиты): сначала вдоль «входного» края (+Z, откуда
+-- смотрит стартовая камера) от середины к углам, затем остальные края и центр.
+local function walkCandidates(half: number): { Vector2 }
+	local points: { Vector2 } = { Vector2.new(0, half) }
+	for index = 1, math.floor(half / WALK_STEP) do
+		table.insert(points, Vector2.new(index * WALK_STEP, half))
+		table.insert(points, Vector2.new(-index * WALK_STEP, half))
+	end
+	table.insert(points, Vector2.new(half, 0))
+	table.insert(points, Vector2.new(-half, 0))
+	table.insert(points, Vector2.new(0, -half))
+	table.insert(points, Vector2.zero)
+	return points
+end
+
+-- Ставит персонажа на свободное место у края участка лицом к центру. Если всё застроено,
+-- персонаж встаёт сверху на постройку у входа — внутри стены он не окажется.
+function PlotTeleporter.toWalkSpot(player: Player, plot: Part): boolean
+	local character, root = waitForCharacter(player)
+	if not character or not root then
+		return false
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local hipHeight = if humanoid then humanoid.HipHeight else 0
+	local standHeight = math.max(hipHeight + root.Size.Y / 2, character:GetExtentsSize().Y / 2)
+
+	local surface = plot.Size.Y / 2
+	local half = math.max(plot.Size.X / 2 - WALK_INSET, 0)
+	local candidates = walkCandidates(half)
+
+	local overlap = OverlapParams.new()
+	overlap.FilterType = Enum.RaycastFilterType.Include
+	overlap.FilterDescendantsInstances = { plot }
+
+	local ground: Vector3? = nil
+	for _, point in candidates do
+		-- Бокс висит чуть над плитой: сама плита в него не попадает, только постройки и декор.
+		local probe = plot.CFrame:PointToWorldSpace(Vector3.new(point.X, surface + WALK_CLEARANCE.Y / 2 + 0.3, point.Y))
+		if #workspace:GetPartBoundsInBox(CFrame.new(probe), WALK_CLEARANCE, overlap) == 0 then
+			ground = plot.CFrame:PointToWorldSpace(Vector3.new(point.X, surface, point.Y))
+			break
+		end
+	end
+
+	if not ground then
+		local first = candidates[1]
+		local top = plot.CFrame:PointToWorldSpace(Vector3.new(first.X, surface + DROP_FROM, first.Y))
+		local rayParams = RaycastParams.new()
+		rayParams.FilterType = Enum.RaycastFilterType.Include
+		rayParams.FilterDescendantsInstances = { plot }
+		local hit = workspace:Raycast(top, Vector3.yAxis * -(DROP_FROM + 10), rayParams)
+		ground = if hit then hit.Position else plot.CFrame:PointToWorldSpace(Vector3.new(first.X, surface, first.Y))
+	end
+
+	local target = (ground :: Vector3) + Vector3.yAxis * (standHeight + SAFETY_GAP)
+	local lookAt = Vector3.new(plot.Position.X, target.Y, plot.Position.Z)
+	local cframe = if (lookAt - target).Magnitude > 1 then CFrame.lookAt(target, lookAt) else CFrame.new(target)
+	character:PivotTo(cframe)
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	return true
+end
+
 return PlotTeleporter
 ]]></string>
         </Properties>
@@ -3192,54 +3294,118 @@ return PlotTeleporter
         <Properties>
           <string name="Name">CharacterHider</string>
           <string name="Source"><![CDATA[--!strict
--- CharacterHider: полностью прячет персонажа игрока, пока тот строит свободной камерой.
+-- CharacterHider: полностью прячет персонажа игрока, пока тот строит свободной камерой,
+-- и возвращает его в обычный вид для режима прогулки.
 -- Делается на сервере, потому что изменения прозрачности на клиенте
 -- не реплицируются, и другие игроки продолжали бы видеть персонажа.
 --
--- Что именно делаем:
+-- Что именно делаем при hide:
 --   1) все части и аксессуары: Transparency = 1, без коллизий, лучи (Raycast) их не задевают;
 --   2) лица (Decal), частицы, следы и таблички над головой выключаем;
 --   3) HumanoidRootPart якорим: без коллизий персонаж иначе провалился бы сквозь плиту.
+-- Прежние значения запоминаются, поэтому show возвращает персонажа точно таким, каким он был.
 
 local CharacterHider = {}
 
--- Прячет один объект из персонажа (часть, лицо, эффект или табличку).
-local function hideInstance(instance: Instance)
+type State = {
+	connection: RBXScriptConnection,
+	saved: { [Instance]: { [string]: any } }, -- объект -> его свойства до скрытия
+}
+
+local states: { [Model]: State } = {}
+
+-- Прячет один объект из персонажа (часть, лицо, эффект или табличку), запомнив прежний вид.
+local function hideInstance(instance: Instance, saved: { [Instance]: { [string]: any } })
+	if saved[instance] then
+		return
+	end
 	if instance:IsA("BasePart") then
+		saved[instance] = {
+			Transparency = instance.Transparency,
+			CanCollide = instance.CanCollide,
+			CanQuery = instance.CanQuery,
+			CanTouch = instance.CanTouch,
+		}
 		instance.Transparency = 1
 		instance.CanCollide = false
-		instance.CanQuery = false -- луч мыши при будущей стройке пролетает сквозь персонажа
+		instance.CanQuery = false -- луч мыши при стройке пролетает сквозь персонажа
 		instance.CanTouch = false
 	elseif instance:IsA("Decal") then
+		saved[instance] = { Transparency = instance.Transparency }
 		instance.Transparency = 1
-	elseif instance:IsA("ParticleEmitter") or instance:IsA("Trail") or instance:IsA("Beam") then
+	elseif instance:IsA("ParticleEmitter") then
+		saved[instance] = { Enabled = instance.Enabled }
+		instance.Enabled = false
+	elseif instance:IsA("Trail") then
+		saved[instance] = { Enabled = instance.Enabled }
+		instance.Enabled = false
+	elseif instance:IsA("Beam") then
+		saved[instance] = { Enabled = instance.Enabled }
 		instance.Enabled = false
 	elseif instance:IsA("BillboardGui") then
+		saved[instance] = { Enabled = instance.Enabled }
 		instance.Enabled = false
 	end
 end
 
--- Прячет персонажа. Вызывать после телепорта на участок.
+local function setAnchored(character: Model, anchored: boolean)
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		root.Anchored = anchored
+	end
+end
+
+function CharacterHider.isHidden(character: Model): boolean
+	return states[character] ~= nil
+end
+
 function CharacterHider.hide(character: Model)
-	-- Шаг 1. Убираем ник и полоску здоровья над головой.
+	setAnchored(character, true)
+	if states[character] then
+		return -- уже спрятан: повторно запоминать «прежний вид» нельзя, он уже невидимый
+	end
+
+	-- Имя и здоровье над головой.
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 	end
 
-	-- Шаг 2. Прячем всё, что уже есть в персонаже.
+	local saved: { [Instance]: { [string]: any } } = {}
 	for _, descendant in character:GetDescendants() do
-		hideInstance(descendant)
+		hideInstance(descendant, saved)
 	end
 
-	-- Шаг 3. Аксессуары и инструменты могут догрузиться позже: прячем и их.
-	character.DescendantAdded:Connect(hideInstance)
+	-- Аксессуары и одежда могут догрузиться позже — прячем и их.
+	local connection = character.DescendantAdded:Connect(function(descendant: Instance)
+		hideInstance(descendant, saved)
+	end)
+	states[character] = { connection = connection, saved = saved }
 
-	-- Шаг 4. Якорим корень, чтобы персонаж остался на месте, а не упал в пустоту.
-	local root = character:FindFirstChild("HumanoidRootPart")
-	if root and root:IsA("BasePart") then
-		root.Anchored = true
+	character.Destroying:Once(function()
+		states[character] = nil
+	end)
+end
+
+-- Возвращает персонажу прежний вид, коллизии и подвижность (режим прогулки).
+function CharacterHider.show(character: Model)
+	local state = states[character]
+	if state then
+		states[character] = nil
+		state.connection:Disconnect()
+		for instance, properties in state.saved do
+			if instance.Parent then
+				for name, value in properties do
+					(instance :: any)[name] = value
+				end
+			end
+		end
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+		end
 	end
+	setAnchored(character, false)
 end
 
 return CharacterHider
@@ -5386,6 +5552,7 @@ local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 local MenuView = require(script.Parent.MenuView)
 local AudioController = require(script.Parent.AudioController)
 local BuildEffects = require(script.Parent.BuildEffects)
+local WalkController = require(script.Parent.WalkController)
 local TopHudController = require(script.Parent.TopHudController)
 local BuildCameraController = require(script.Parent.BuildCameraController)
 local BuildHudController = require(script.Parent.BuildHudController)
@@ -5401,6 +5568,9 @@ local PAUSE_KEYS: { [Enum.KeyCode]: boolean } = {
 	[Enum.KeyCode.Tab] = true,
 	[Enum.KeyCode.P] = true,
 }
+
+-- Клавиша переключения стройка / прогулка.
+local WALK_KEY = Enum.KeyCode.V
 
 local MenuController = {}
 
@@ -5638,10 +5808,28 @@ function MenuController.start(playerGui: PlayerGui)
 		end
 	end
 
+	-- ===== Режим прогулки =====
+	-- Кнопка «Режим» в верхней панели и клавиша V; только в игре и при закрытом меню.
+	local function toggleWalk()
+		if inGame and not busy and currentState == "Closed" then
+			task.spawn(WalkController.toggle, buildHud)
+		end
+	end
+
+	TopHudController.WalkRequested:Connect(toggleWalk)
+	WalkController.Changed:Connect(function(walking: boolean)
+		TopHudController.setWalkMode(walking)
+	end)
+
 	TopHudController.PauseRequested:Connect(togglePause)
 	UserInputService.InputBegan:Connect(function(input: InputObject)
-		if PAUSE_KEYS[input.KeyCode] and not UserInputService:GetFocusedTextBox() then
+		if UserInputService:GetFocusedTextBox() then
+			return
+		end
+		if PAUSE_KEYS[input.KeyCode] then
 			togglePause()
+		elseif input.KeyCode == WALK_KEY then
+			toggleWalk()
 		end
 	end)
 
@@ -5658,6 +5846,7 @@ function MenuController.start(playerGui: PlayerGui)
 	-- за игроком: можно вернуться в ту же фракцию или выбрать другую.
 	view.exitButton.Activated:Connect(function()
 		inGame = false
+		WalkController.leave(buildHud, true) -- с прогулки: персонаж снова прячется
 		BuildController.stop()
 		BuildCameraController.stop()
 		buildHud.hide()
@@ -6664,6 +6853,7 @@ local Theme = require(script.Parent.Theme)
 export type BuildHud = {
 	show: () -> (), -- плавно выдвинуть панель
 	hide: () -> (), -- плавно убрать панель (и закрыть каталог)
+	setToolbarVisible: (visible: boolean) -> (), -- спрятать / вернуть только нижнюю панель (прогулка)
 	getSelection: () -> (string?, string?), -- (id формы, id инструмента)
 	SelectionChanged: RBXScriptSignal, -- (shapeId: string?, toolId: string?)
 	setFaction: (factionId: string?) -> (), -- отметить ★ «родные» блоки фракции
@@ -6772,6 +6962,9 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 		fire()
 	end)
 
+	-- Нижняя панель может быть спрятана отдельно от верхней (режим прогулки).
+	local toolbarShown = true
+
 	local function onSlotClicked(slot: BuildSlots.Slot)
 		if slot.kind == "Catalog" then
 			toggleCatalog()
@@ -6813,7 +7006,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 
 	-- Клавиша B: открыть/закрыть каталог (только пока панель на экране).
 	UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
-		if processed or not visible or UserInputService:GetFocusedTextBox() then
+		if processed or not visible or not toolbarShown or UserInputService:GetFocusedTextBox() then
 			return
 		end
 		if input.KeyCode == BuildConfig.Keys.OpenCatalog then
@@ -6822,6 +7015,18 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	end)
 
 	-- Шаг 3. Появление и скрытие панели.
+	local function setToolbarVisible(shown: boolean)
+		toolbarShown = shown
+		if not shown then
+			picker.close()
+			PaintMenuController.close()
+		end
+		if visible then
+			local position = if shown then BuildHudView.PanelShownPosition else BuildHudView.PanelHiddenPosition
+			TweenService:Create(view.panel, Theme.TweenInfo, { Position = position }):Play()
+		end
+	end
+
 	local function show()
 		visible = true
 		TopHudController.show()
@@ -6850,6 +7055,7 @@ function BuildHudController.start(playerGui: PlayerGui): BuildHud
 	return {
 		show = show,
 		hide = hide,
+		setToolbarVisible = setToolbarVisible,
 		getSelection = function(): (string?, string?)
 			return shapeId, toolId
 		end,
@@ -7148,6 +7354,9 @@ local angles: BuildGrid.Angles = { yaw = 0, pitch = 0, roll = 0 }
 -- Открыто меню (пауза, настройки): редактор не строит и не реагирует на клавиши.
 local paused = false
 
+-- Режим прогулки: игрок ходит по участку, редактор молчит так же, как при паузе.
+local walking = false
+
 -- ===== Луч из курсора =====
 
 -- Куда смотрит курсор: только своя плита или блоки на ней (декор и призрак исключены).
@@ -7426,7 +7635,7 @@ end
 
 local function step(dt: number)
 	local s = session
-	if not s or paused then
+	if not s or paused or walking then
 		return
 	end
 
@@ -7495,6 +7704,18 @@ local function step(dt: number)
 end
 
 -- ===== Публичный API =====
+
+function BuildController.setWalking(value: boolean)
+	walking = value
+	local s = session
+	if value and s then
+		s.ghost.hide()
+		s.gizmo.select(nil)
+		s.highlight.Adornee = nil
+		s.highlight.Enabled = false
+		s.hovered = nil
+	end
+end
 
 function BuildController.setPaused(value: boolean)
 	paused = value
@@ -7680,7 +7901,7 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	table.insert(
 		s.connections,
 		UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
-			if processed or paused or UserInputService:GetFocusedTextBox() then
+			if processed or paused or walking or UserInputService:GetFocusedTextBox() then
 				return
 			end
 
@@ -9524,6 +9745,11 @@ local pauseRequested = Instance.new("BindableEvent")
 -- Нажата кнопка «Меню»: меню паузы открывает MenuController.
 TopHudController.PauseRequested = pauseRequested.Event
 
+local walkRequested = Instance.new("BindableEvent")
+
+-- Нажата кнопка «Режим»: стройку и прогулку переключает WalkController.
+TopHudController.WalkRequested = walkRequested.Event
+
 local view: TopHudView.View? = nil
 local visible = false
 local statusToken = 0
@@ -9648,8 +9874,22 @@ function TopHudController.attach(playerGui: PlayerGui)
 		pauseRequested:Fire()
 	end)
 
+	created.walkButton.Activated:Connect(function()
+		walkRequested:Fire()
+	end)
+	TopHudController.setWalkMode(false)
+
 	TimeOfDayController.set(TimeOfDayController.DefaultId, true)
 	refreshTime()
+end
+
+-- Подпись и подсветка кнопки режима.
+function TopHudController.setWalkMode(walking: boolean)
+	local v = view
+	if v then
+		v.walkButton.Text = if walking then "Режим: Прогулка (V)" else "Режим: Стройка (V)"
+		setSelected(v.walkButton, walking)
+	end
 end
 
 function TopHudController.show()
@@ -9699,6 +9939,7 @@ export type View = {
 	loadButton: TextButton,
 	statusLabel: TextLabel,
 	pauseButton: TextButton, -- «Меню» в левом верхнем углу
+	walkButton: TextButton, -- «Режим: Стройка / Прогулка»
 }
 
 local BUTTON_HEIGHT = 28
@@ -9777,6 +10018,13 @@ function TopHudView.build(playerGui: PlayerGui): View
 	local loadButton =
 		compactButton("Load", "Загрузить", Theme.SecondaryButtonColor, ACTION_BUTTON_WIDTH, nextOrder(), panel)
 
+	local walkSeparator = separator:Clone()
+	walkSeparator.LayoutOrder = nextOrder()
+	walkSeparator.Parent = panel
+
+	-- Переключатель стройка / прогулка (клавиша V).
+	local walkButton = compactButton("Walk", "", Theme.SecondaryButtonColor, 156, nextOrder(), panel)
+
 	-- Статус под панелью: «Сохранено!», «Загружено!» или причина ошибки.
 	local statusLabel = UIFactory.label("Status", "", 16, gui)
 	statusLabel.Font = Theme.BodyFont
@@ -9816,6 +10064,7 @@ function TopHudView.build(playerGui: PlayerGui): View
 		loadButton = loadButton,
 		statusLabel = statusLabel,
 		pauseButton = pauseButton,
+		walkButton = walkButton,
 	}
 end
 
@@ -9875,6 +10124,10 @@ local SFX: { [string]: { id: string, volume: number } } = {
 	Paint = { id = "rbxassetid://9116394545", volume = 0.45 }, -- мягкий перезвон: покраска и скрижаль
 	Remove = { id = "rbxassetid://9118770616", volume = 0.5 }, -- осыпающийся песок: блок снесён
 	Click = { id = "rbxassetid://15675032796", volume = 0.35 }, -- щелчок кнопки интерфейса
+	-- Режим прогулки (FootstepController)
+	StepStone = { id = "rbxassetid://9118248653", volume = 0.4 }, -- шаг по камню
+	StepSand = { id = "rbxassetid://9118768256", volume = 0.35 }, -- шаг по песку
+	Land = { id = "rbxassetid://9113474578", volume = 0.3 }, -- приземление после прыжка
 }
 
 -- Высота тона каждый раз немного другая: частые действия не звучат монотонно.
@@ -10523,6 +10776,350 @@ function BuildEffects.start()
 end
 
 return BuildEffects
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD64"><Properties><string name="Name">FootstepController</string><string name="Source"><![CDATA[--!strict
+-- FootstepController (клиент): звук шагов в режиме прогулки — по материалу под ногами.
+--   * камень (мрамор, сланец, булыжник, кирпич, бетон и всё прочее твёрдое) — чёткий шаг;
+--   * песок и песчаник — мягкий хрустящий шаг;
+--   * приземление после прыжка — глухой удар.
+-- Каждый шаг немного отличается высотой тона и громкостью, а частота шагов растёт со скоростью.
+-- Звуки идут через AudioController.playSfx, поэтому выключаются переключателем
+-- «Звуки стройки (SFX)» в настройках. Стандартный звук бега Roblox на это время глушится.
+
+local RunService = game:GetService("RunService")
+
+local AudioController = require(script.Parent.AudioController)
+
+local STRIDE = 5.4 -- студов между шагами: при скорости 16 — шаг каждые ~0.34 с
+local MIN_SPEED = 0.5 -- медленнее персонаж считается стоящим
+local VARIATION = NumberRange.new(0.9, 1.1) -- разброс высоты тона и громкости
+
+-- Материалы, по которым шаг звучит как по песку; всё остальное — как по камню.
+local SAND_MATERIALS: { [Enum.Material]: boolean } = {
+	[Enum.Material.Sand] = true,
+	[Enum.Material.Sandstone] = true,
+	[Enum.Material.Ground] = true,
+	[Enum.Material.Mud] = true,
+	[Enum.Material.Snow] = true,
+}
+
+-- Стандартные звуки персонажа, которые заменяются нашими.
+local DEFAULT_SOUNDS = { "Running", "Landing" }
+
+local FootstepController = {}
+
+local connections: { RBXScriptConnection } = {}
+local muted: { [Sound]: number } = {} -- стандартный звук -> его прежняя громкость
+local travelled = 0
+
+local function varied(gain: number): AudioController.SfxStyle
+	local spread = VARIATION.Max - VARIATION.Min
+	return { pitch = VARIATION, gain = gain * (VARIATION.Min + math.random() * spread) }
+end
+
+local function muteDefaults(character: Model)
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return
+	end
+	for _, name in DEFAULT_SOUNDS do
+		local sound = root:FindFirstChild(name)
+		if sound and sound:IsA("Sound") then
+			muted[sound] = sound.Volume
+			sound.Volume = 0
+		end
+	end
+end
+
+function FootstepController.stop()
+	for _, connection in connections do
+		connection:Disconnect()
+	end
+	table.clear(connections)
+	for sound, volume in muted do
+		if sound.Parent then
+			sound.Volume = volume
+		end
+	end
+	table.clear(muted)
+end
+
+-- Включает шаги для персонажа (вызывается при входе в режим прогулки и после респавна).
+function FootstepController.start(humanoid: Humanoid)
+	FootstepController.stop()
+	travelled = 0
+
+	local character = humanoid.Parent
+	if character and character:IsA("Model") then
+		muteDefaults(character)
+	end
+
+	table.insert(
+		connections,
+		RunService.Heartbeat:Connect(function(dt: number)
+			local speed = humanoid.MoveDirection.Magnitude * humanoid.WalkSpeed
+			local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
+			local state = humanoid:GetState()
+			local walking = state == Enum.HumanoidStateType.Running or state == Enum.HumanoidStateType.RunningNoPhysics
+			if speed < MIN_SPEED or not grounded or not walking then
+				travelled = STRIDE * 0.6 -- первый шаг после остановки звучит почти сразу
+				return
+			end
+			travelled += speed * dt
+			if travelled >= STRIDE then
+				travelled -= STRIDE
+				local sand = SAND_MATERIALS[humanoid.FloorMaterial] == true
+				AudioController.playSfx(if sand then "StepSand" else "StepStone", varied(1))
+			end
+		end)
+	)
+
+	table.insert(
+		connections,
+		humanoid.StateChanged:Connect(function(_old: Enum.HumanoidStateType, new: Enum.HumanoidStateType)
+			if new == Enum.HumanoidStateType.Landed then
+				AudioController.playSfx("Land", varied(1))
+			end
+		end)
+	)
+end
+
+return FootstepController
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD65"><Properties><string name="Name">WalkController</string><string name="Source"><![CDATA[--!strict
+-- WalkController (клиент): переключение между стройкой и прогулкой по своему участку.
+--   «Прогулка»: сервер показывает персонажа и ставит его на свободное место у края плиты;
+--   свободная камера выключается, управление возвращается персонажу, нижняя панель и панель
+--   «Точность» прячутся; включаются бег, покачивание камеры (WalkMotion) и шаги (FootstepController).
+--   «Стройка»: сервер снова прячет персонажа, возвращаются свободная камера и панели.
+-- Кнопку в верхней панели и клавишу V подключает MenuController.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
+local BuildCameraController = require(script.Parent.BuildCameraController)
+local BuildController = require(script.Parent.BuildController)
+local BuildSettingsController = require(script.Parent.BuildSettingsController)
+local FootstepController = require(script.Parent.FootstepController)
+local WalkMotion = require(script.Parent.WalkMotion)
+
+-- Часть BuildHud, нужная прогулке: спрятать и вернуть нижнюю панель инструментов.
+export type Toolbar = {
+	setToolbarVisible: (visible: boolean) -> (),
+}
+
+local CHARACTER_TIMEOUT = 5
+
+local WalkController = {}
+
+local changed = Instance.new("BindableEvent")
+
+-- (walking: boolean) — режим сменился.
+WalkController.Changed = changed.Event
+
+local walking = false
+local busy = false
+local plot: Part? = nil
+local respawnConnection: RBXScriptConnection? = nil
+
+function WalkController.isWalking(): boolean
+	return walking
+end
+
+-- Просит сервер показать или спрятать персонажа. true — сервер выполнил.
+local function request(value: boolean): boolean
+	local remote = ReplicatedStorage.Shared:FindFirstChild(PlotConfig.WalkRemoteName)
+	if not remote or not remote:IsA("RemoteFunction") then
+		return false
+	end
+	local ok, result = pcall(function()
+		return remote:InvokeServer(value)
+	end)
+	return ok and result == true
+end
+
+local function waitHumanoid(character: Model): Humanoid?
+	local humanoid = character:WaitForChild("Humanoid", CHARACTER_TIMEOUT)
+	return if humanoid and humanoid:IsA("Humanoid") then humanoid else nil
+end
+
+-- Камера и эффекты ходьбы для нынешнего персонажа.
+local function attach(character: Model)
+	local humanoid = waitHumanoid(character)
+	if not humanoid or not walking then
+		return
+	end
+	local camera = workspace.CurrentCamera
+	if camera then
+		camera.CameraType = Enum.CameraType.Custom
+		camera.CameraSubject = humanoid
+	end
+	WalkMotion.start(humanoid)
+	FootstepController.start(humanoid)
+end
+
+local function detach()
+	WalkMotion.stop()
+	FootstepController.stop()
+	if respawnConnection then
+		respawnConnection:Disconnect()
+		respawnConnection = nil
+	end
+end
+
+-- Стройка -> прогулка. Возвращает false, если сервер не смог выпустить персонажа.
+function WalkController.enter(toolbar: Toolbar): boolean
+	local currentPlot = BuildCameraController.getPlot()
+	if walking or busy or not currentPlot then
+		return false
+	end
+	busy = true
+	if not request(true) then
+		busy = false
+		BuildSettingsController.notify("Не удалось выйти на прогулку: персонаж ещё не готов")
+		return false
+	end
+
+	walking = true
+	plot = currentPlot
+	BuildController.setWalking(true)
+	BuildSettingsController.hide()
+	toolbar.setToolbarVisible(false)
+	BuildCameraController.stop() -- возвращает обычную камеру и управление персонажем
+
+	local player = Players.LocalPlayer
+	if player.Character then
+		task.spawn(attach, player.Character)
+	end
+	-- После гибели (например, падения с плиты) сервер снова ставит персонажа у входа.
+	respawnConnection = player.CharacterAdded:Connect(attach)
+
+	busy = false
+	changed:Fire(true)
+	return true
+end
+
+-- Прогулка -> стройка. quiet = true — выход в главное меню: редактор и камеру не возвращаем.
+function WalkController.leave(toolbar: Toolbar, quiet: boolean?)
+	if not walking or busy then
+		return
+	end
+	busy = true
+	detach()
+	request(false) -- сервер прячет персонажа и ставит его в центр плиты
+
+	walking = false
+	toolbar.setToolbarVisible(true)
+	BuildController.setWalking(false)
+	local currentPlot = plot
+	plot = nil
+	if not quiet and currentPlot and currentPlot.Parent then
+		BuildCameraController.start(currentPlot)
+		BuildSettingsController.show()
+	end
+
+	busy = false
+	changed:Fire(false)
+end
+
+function WalkController.toggle(toolbar: Toolbar)
+	if walking then
+		WalkController.leave(toolbar)
+	else
+		WalkController.enter(toolbar)
+	end
+end
+
+return WalkController
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD66"><Properties><string name="Name">WalkMotion</string><string name="Source"><![CDATA[--!strict
+-- WalkMotion (клиент): ощущение движения пешком в режиме прогулки.
+--   * бег при зажатом LeftShift: скорость 16 -> 24 и плавное расширение поля зрения;
+--   * лёгкое покачивание камеры в такт шагам (Humanoid.CameraOffset — работает и от третьего,
+--     и от первого лица, не мешая стандартной камере и приближению колесом мыши).
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local BIND_NAME = "WalkMotion"
+local WALK_SPEED = 16
+local SPRINT_SPEED = 24
+local SPRINT_KEY = Enum.KeyCode.LeftShift
+local WALK_FOV = 70
+local SPRINT_FOV = 78
+local FOV_RESPONSE = 7 -- чем больше, тем быстрее меняется поле зрения
+local BOB_HEIGHT = 0.09 -- студов вверх-вниз
+local BOB_SWAY = 0.045 -- студов из стороны в сторону
+local BOB_RATE = 0.75 -- радиан фазы на студ пути: два шага — один полный цикл покачивания
+local BOB_RESPONSE = 12
+
+local WalkMotion = {}
+
+local humanoid: Humanoid? = nil
+local phase = 0
+local savedMouseLock: boolean? = nil
+
+local function step(dt: number)
+	local h = humanoid
+	local camera = workspace.CurrentCamera
+	if not h or not h.Parent or not camera then
+		return
+	end
+
+	local moving = h.MoveDirection.Magnitude > 0.1
+	local grounded = h.FloorMaterial ~= Enum.Material.Air
+	local typing = UserInputService:GetFocusedTextBox() ~= nil
+	local sprinting = moving and not typing and UserInputService:IsKeyDown(SPRINT_KEY)
+
+	local speed = if sprinting then SPRINT_SPEED else WALK_SPEED
+	if h.WalkSpeed ~= speed then
+		h.WalkSpeed = speed
+	end
+
+	local fov = if sprinting then SPRINT_FOV else WALK_FOV
+	camera.FieldOfView += (fov - camera.FieldOfView) * (1 - math.exp(-FOV_RESPONSE * dt))
+
+	local target = Vector3.zero
+	if moving and grounded then
+		phase += dt * h.WalkSpeed * BOB_RATE
+		target = Vector3.new(math.cos(phase / 2) * BOB_SWAY, math.sin(phase) * BOB_HEIGHT, 0)
+	end
+	h.CameraOffset = h.CameraOffset:Lerp(target, 1 - math.exp(-BOB_RESPONSE * dt))
+end
+
+function WalkMotion.stop()
+	RunService:UnbindFromRenderStep(BIND_NAME)
+	local h = humanoid
+	humanoid = nil
+	if h and h.Parent then
+		h.CameraOffset = Vector3.zero
+		h.WalkSpeed = WALK_SPEED
+	end
+	local camera = workspace.CurrentCamera
+	if camera then
+		camera.FieldOfView = WALK_FOV
+	end
+	if savedMouseLock ~= nil then
+		Players.LocalPlayer.DevEnableMouseLock = savedMouseLock
+		savedMouseLock = nil
+	end
+end
+
+-- Включает бег и покачивание для персонажа (вход в режим прогулки и респавн).
+function WalkMotion.start(target: Humanoid)
+	WalkMotion.stop()
+	humanoid = target
+	phase = 0
+	-- LeftShift по умолчанию переключает Shift Lock — на время прогулки он занят бегом.
+	savedMouseLock = Players.LocalPlayer.DevEnableMouseLock
+	Players.LocalPlayer.DevEnableMouseLock = false
+	-- До стандартной камеры: она учитывает CameraOffset в этом же кадре.
+	RunService:BindToRenderStep(BIND_NAME, Enum.RenderPriority.Camera.Value - 1, step)
+end
+
+return WalkMotion
 ]]></string></Properties></Item>
 </Item>
       </Item>

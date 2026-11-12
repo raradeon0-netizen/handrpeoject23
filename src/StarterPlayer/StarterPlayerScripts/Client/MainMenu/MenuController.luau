@@ -11,6 +11,7 @@ local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 local MenuView = require(script.Parent.MenuView)
 local AudioController = require(script.Parent.AudioController)
 local BuildEffects = require(script.Parent.BuildEffects)
+local WalkController = require(script.Parent.WalkController)
 local TopHudController = require(script.Parent.TopHudController)
 local BuildCameraController = require(script.Parent.BuildCameraController)
 local BuildHudController = require(script.Parent.BuildHudController)
@@ -26,6 +27,9 @@ local PAUSE_KEYS: { [Enum.KeyCode]: boolean } = {
 	[Enum.KeyCode.Tab] = true,
 	[Enum.KeyCode.P] = true,
 }
+
+-- Клавиша переключения стройка / прогулка.
+local WALK_KEY = Enum.KeyCode.V
 
 local MenuController = {}
 
@@ -263,10 +267,28 @@ function MenuController.start(playerGui: PlayerGui)
 		end
 	end
 
+	-- ===== Режим прогулки =====
+	-- Кнопка «Режим» в верхней панели и клавиша V; только в игре и при закрытом меню.
+	local function toggleWalk()
+		if inGame and not busy and currentState == "Closed" then
+			task.spawn(WalkController.toggle, buildHud)
+		end
+	end
+
+	TopHudController.WalkRequested:Connect(toggleWalk)
+	WalkController.Changed:Connect(function(walking: boolean)
+		TopHudController.setWalkMode(walking)
+	end)
+
 	TopHudController.PauseRequested:Connect(togglePause)
 	UserInputService.InputBegan:Connect(function(input: InputObject)
-		if PAUSE_KEYS[input.KeyCode] and not UserInputService:GetFocusedTextBox() then
+		if UserInputService:GetFocusedTextBox() then
+			return
+		end
+		if PAUSE_KEYS[input.KeyCode] then
 			togglePause()
+		elseif input.KeyCode == WALK_KEY then
+			toggleWalk()
 		end
 	end)
 
@@ -283,6 +305,7 @@ function MenuController.start(playerGui: PlayerGui)
 	-- за игроком: можно вернуться в ту же фракцию или выбрать другую.
 	view.exitButton.Activated:Connect(function()
 		inGame = false
+		WalkController.leave(buildHud, true) -- с прогулки: персонаж снова прячется
 		BuildController.stop()
 		BuildCameraController.stop()
 		buildHud.hide()

@@ -89,6 +89,9 @@ local angles: BuildGrid.Angles = { yaw = 0, pitch = 0, roll = 0 }
 -- Открыто меню (пауза, настройки): редактор не строит и не реагирует на клавиши.
 local paused = false
 
+-- Режим прогулки: игрок ходит по участку, редактор молчит так же, как при паузе.
+local walking = false
+
 -- ===== Луч из курсора =====
 
 -- Куда смотрит курсор: только своя плита или блоки на ней (декор и призрак исключены).
@@ -367,7 +370,7 @@ end
 
 local function step(dt: number)
 	local s = session
-	if not s or paused then
+	if not s or paused or walking then
 		return
 	end
 
@@ -436,6 +439,18 @@ local function step(dt: number)
 end
 
 -- ===== Публичный API =====
+
+function BuildController.setWalking(value: boolean)
+	walking = value
+	local s = session
+	if value and s then
+		s.ghost.hide()
+		s.gizmo.select(nil)
+		s.highlight.Adornee = nil
+		s.highlight.Enabled = false
+		s.hovered = nil
+	end
+end
 
 function BuildController.setPaused(value: boolean)
 	paused = value
@@ -621,7 +636,7 @@ function BuildController.start(plot: Part, buildHud: BuildHud): boolean
 	table.insert(
 		s.connections,
 		UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
-			if processed or paused or UserInputService:GetFocusedTextBox() then
+			if processed or paused or walking or UserInputService:GetFocusedTextBox() then
 				return
 			end
 

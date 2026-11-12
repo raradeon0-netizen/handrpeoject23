@@ -19,6 +19,7 @@ local PlotConfig = {}
 -- Имя RemoteFunction, через которую меню сообщает серверу о выбранной фракции.
 -- Сервер создаёт её сам при старте (см. PlotService).
 PlotConfig.RemoteName = "SelectFaction"
+PlotConfig.WalkRemoteName = "SetWalkMode" -- RemoteFunction: true — прогулка, false — стройка
 
 -- Размер участка: 200x200 studs, толщина 2 (как у платформ в Workspace.Platforms).
 PlotConfig.PlotSize = 200

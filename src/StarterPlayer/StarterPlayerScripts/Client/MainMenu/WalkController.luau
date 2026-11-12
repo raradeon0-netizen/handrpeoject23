@@ -1,0 +1,146 @@
+--!strict
+-- WalkController (клиент): переключение между стройкой и прогулкой по своему участку.
+--   «Прогулка»: сервер показывает персонажа и ставит его на свободное место у края плиты;
+--   свободная камера выключается, управление возвращается персонажу, нижняя панель и панель
+--   «Точность» прячутся; включаются бег, покачивание камеры (WalkMotion) и шаги (FootstepController).
+--   «Стройка»: сервер снова прячет персонажа, возвращаются свободная камера и панели.
+-- Кнопку в верхней панели и клавишу V подключает MenuController.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
+local BuildCameraController = require(script.Parent.BuildCameraController)
+local BuildController = require(script.Parent.BuildController)
+local BuildSettingsController = require(script.Parent.BuildSettingsController)
+local FootstepController = require(script.Parent.FootstepController)
+local WalkMotion = require(script.Parent.WalkMotion)
+
+-- Часть BuildHud, нужная прогулке: спрятать и вернуть нижнюю панель инструментов.
+export type Toolbar = {
+	setToolbarVisible: (visible: boolean) -> (),
+}
+
+local CHARACTER_TIMEOUT = 5
+
+local WalkController = {}
+
+local changed = Instance.new("BindableEvent")
+
+-- (walking: boolean) — режим сменился.
+WalkController.Changed = changed.Event
+
+local walking = false
+local busy = false
+local plot: Part? = nil
+local respawnConnection: RBXScriptConnection? = nil
+
+function WalkController.isWalking(): boolean
+	return walking
+end
+
+-- Просит сервер показать или спрятать персонажа. true — сервер выполнил.
+local function request(value: boolean): boolean
+	local remote = ReplicatedStorage.Shared:FindFirstChild(PlotConfig.WalkRemoteName)
+	if not remote or not remote:IsA("RemoteFunction") then
+		return false
+	end
+	local ok, result = pcall(function()
+		return remote:InvokeServer(value)
+	end)
+	return ok and result == true
+end
+
+local function waitHumanoid(character: Model): Humanoid?
+	local humanoid = character:WaitForChild("Humanoid", CHARACTER_TIMEOUT)
+	return if humanoid and humanoid:IsA("Humanoid") then humanoid else nil
+end
+
+-- Камера и эффекты ходьбы для нынешнего персонажа.
+local function attach(character: Model)
+	local humanoid = waitHumanoid(character)
+	if not humanoid or not walking then
+		return
+	end
+	local camera = workspace.CurrentCamera
+	if camera then
+		camera.CameraType = Enum.CameraType.Custom
+		camera.CameraSubject = humanoid
+	end
+	WalkMotion.start(humanoid)
+	FootstepController.start(humanoid)
+end
+
+local function detach()
+	WalkMotion.stop()
+	FootstepController.stop()
+	if respawnConnection then
+		respawnConnection:Disconnect()
+		respawnConnection = nil
+	end
+end
+
+-- Стройка -> прогулка. Возвращает false, если сервер не смог выпустить персонажа.
+function WalkController.enter(toolbar: Toolbar): boolean
+	local currentPlot = BuildCameraController.getPlot()
+	if walking or busy or not currentPlot then
+		return false
+	end
+	busy = true
+	if not request(true) then
+		busy = false
+		BuildSettingsController.notify("Не удалось выйти на прогулку: персонаж ещё не готов")
+		return false
+	end
+
+	walking = true
+	plot = currentPlot
+	BuildController.setWalking(true)
+	BuildSettingsController.hide()
+	toolbar.setToolbarVisible(false)
+	BuildCameraController.stop() -- возвращает обычную камеру и управление персонажем
+
+	local player = Players.LocalPlayer
+	if player.Character then
+		task.spawn(attach, player.Character)
+	end
+	-- После гибели (например, падения с плиты) сервер снова ставит персонажа у входа.
+	respawnConnection = player.CharacterAdded:Connect(attach)
+
+	busy = false
+	changed:Fire(true)
+	return true
+end
+
+-- Прогулка -> стройка. quiet = true — выход в главное меню: редактор и камеру не возвращаем.
+function WalkController.leave(toolbar: Toolbar, quiet: boolean?)
+	if not walking or busy then
+		return
+	end
+	busy = true
+	detach()
+	request(false) -- сервер прячет персонажа и ставит его в центр плиты
+
+	walking = false
+	toolbar.setToolbarVisible(true)
+	BuildController.setWalking(false)
+	local currentPlot = plot
+	plot = nil
+	if not quiet and currentPlot and currentPlot.Parent then
+		BuildCameraController.start(currentPlot)
+		BuildSettingsController.show()
+	end
+
+	busy = false
+	changed:Fire(false)
+end
+
+function WalkController.toggle(toolbar: Toolbar)
+	if walking then
+		WalkController.leave(toolbar)
+	else
+		WalkController.enter(toolbar)
+	end
+end
+
+return WalkController
