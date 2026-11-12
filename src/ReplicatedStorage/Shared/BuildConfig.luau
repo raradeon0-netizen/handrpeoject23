@@ -151,6 +151,12 @@ BuildConfig.Shapes = {
 	OrnateRoad = { id = "OrnateRoad", size = Vector3.new(8, 1, 8), prefab = true },
 	OrnateWall = { id = "OrnateWall", size = Vector3.new(12, 8, 4), prefab = true },
 	OrnateCube = { id = "OrnateCube", size = Vector3.new(4, 4, 4), prefab = true },
+
+	-- Каменная кладка: стены и дороги
+	BrickWall = { id = "BrickWall", size = Vector3.new(12, 8, 4), prefab = true },
+	RuinWall = { id = "RuinWall", size = Vector3.new(12, 8, 4), prefab = true },
+	CobbleRoad = { id = "CobbleRoad", size = Vector3.new(8, 1, 8), prefab = true },
+	MosaicRoad = { id = "MosaicRoad", size = Vector3.new(8, 1, 8), prefab = true },
 } :: { [string]: Shape }
 
 -- Базовый материал блоков по фракции: песчаник для Египта, мрамор для Рима и Греции.

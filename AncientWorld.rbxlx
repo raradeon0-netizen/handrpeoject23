@@ -31,6 +31,9 @@ export type Piece = {
 	role: Role,
 	size: Vector3, -- размер самой детали (для цилиндра ось — X)
 	cframe: CFrame, -- положение относительно центра формы
+	shade: number?, -- множитель яркости цвета роли (оттенки отдельных камней)
+	material: Enum.Material?, -- свой материал вместо материала роли
+	color: Color3?, -- свой цвет вместо цвета роли
 }
 
 export type Box = {
@@ -127,6 +130,19 @@ end
 
 local function block(list: { Piece }, role: Role, sx: number, sy: number, sz: number, x: number, y: number, z: number)
 	add(list, "Block", role, Vector3.new(sx, sy, sz), CFrame.new(x, y, z))
+end
+
+-- Камень кладки: бокс со своим оттенком и, при необходимости, своим материалом и цветом.
+local function stone(
+	list: { Piece },
+	role: Role,
+	size: Vector3,
+	cframe: CFrame,
+	shade: number?,
+	material: Enum.Material?,
+	color: Color3?
+)
+	table.insert(list, { kind = "Block", role = role, size = size, cframe = cframe, shade = shade, material = material, color = color })
 end
 
 -- Вертикальный цилиндр (диаметр, высота) с центром в (x, y, z).
@@ -544,7 +560,155 @@ local function ornateCube(_factionId: string?): { Piece }
 	return list
 end
 
+-- ===== Каменная кладка: стены и дороги =====
+-- Геометрию этих префабов проверяет tools/masonry.py check (границы формы и совпадающие грани).
+
+local BRICK_SHADES = { 1, 0.93, 1.05, 0.97 }
+
+-- Кирпичная кладка 12x8x4: ряды кирпичей «вперевязку», утопленный раствор между ними
+-- и резной каменный карниз. Кирпичи проходят стену насквозь, поэтому обе стороны одинаковые.
+local function brickWall(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	stone(list, "Trim", Vector3.new(11.8, 7.2, 3.8), CFrame.new(0, -0.4, 0), 0.8) -- раствор
+
+	local courses, courseHeight, gap = 8, 0.9, 0.1
+	for course = 0, courses - 1 do
+		local y = -4 + courseHeight * (course + 0.5)
+		local edges = if course % 2 == 0 then { -6, -3, 0, 3, 6 } else { -6, -4.5, -1.5, 1.5, 4.5, 6 }
+		for i = 1, #edges - 1 do
+			local left, right = edges[i], edges[i + 1]
+			-- Соседние кирпичи всегда чуть разного оттенка.
+			local shade = BRICK_SHADES[(course * 3 + i * 5) % #BRICK_SHADES + 1]
+			stone(
+				list,
+				"Main",
+				Vector3.new(right - left - gap, courseHeight - gap, 4),
+				CFrame.new((left + right) / 2, y, 0),
+				shade
+			)
+		end
+	end
+
+	block(list, "Main", 11.6, 0.3, 3.6, 0, 3.35, 0) -- выкружка под карнизом
+	block(list, "Trim", 12, 0.5, 4, 0, 3.75, 0) -- карниз
+	return list
+end
+
+-- x, y, z, длина, высота, ширина, поворот°, наклон X°, наклон Z°, порода (1 / 2), оттенок
+local COBBLES: { { number } } = {
+	{ -3.1, 0.08, -3.07, 1.28, 0.42, 1.22, -34.7, 4.9, -3.2, 2, 0.99 },
+	{ -3.03, 0, -0.99, 1.35, 0.47, 1.48, -19.9, 4.6, -3.2, 1, 0.96 },
+	{ -3.08, 0.01, 0.99, 1.35, 0.47, 1.53, 12.7, 3.3, 3.9, 2, 0.91 },
+	{ -3.08, -0.01, 2.88, 1.2, 0.54, 1.27, 19.5, 4.2, 1.7, 2, 1.07 },
+	{ -1.06, 0.02, -2.95, 1.34, 0.47, 1.28, -22.3, 4.4, -2.4, 2, 1.02 },
+	{ -1.11, 0.12, -1.07, 1.2, 0.54, 1.35, 29.8, -2.6, 2.6, 2, 0.88 },
+	{ -0.87, -0.02, 1.12, 1.4, 0.59, 1.5, 0.2, -3.9, 2.6, 2, 0.98 },
+	{ -0.78, 0.06, 2.99, 1.22, 0.52, 1.59, 9.9, 1.6, -2, 2, 1.05 },
+	{ 0.99, 0.09, -3.03, 1.41, 0.53, 1.57, 13.7, -4.6, -1.8, 1, 0.87 },
+	{ 1.05, 0.03, -1.02, 1.65, 0.54, 1.46, -3.5, -4.5, 2.9, 1, 1.02 },
+	{ 0.75, 0.11, 0.88, 1.25, 0.5, 1.28, 6.7, 2.5, -4.7, 1, 1.04 },
+	{ 1.12, -0.01, 2.86, 1.51, 0.56, 1.4, 0, -4.9, 3.8, 2, 0.92 },
+	{ 3.04, 0.08, -3, 1.25, 0.58, 1.22, -28.7, 4.3, -2.4, 1, 1.04 },
+	{ 2.98, 0.08, -0.92, 1.31, 0.47, 1.2, -18.2, 3, -1.8, 1, 1.04 },
+	{ 3.02, 0.08, 0.83, 1.6, 0.45, 1.29, 7.9, -4.8, 2.5, 1, 1.01 },
+	{ 3.01, 0.03, 3.08, 1.38, 0.5, 1.21, 32, 2.5, -4.2, 1, 1.02 },
+	{ -2.01, 0, -2.01, 0.66, 0.39, 0.49, -28.4, -6.1, -3.5, 2, 0.97 },
+	{ -2.02, -0.01, 0.06, 0.64, 0.44, 0.45, 22.7, -3.7, -2.5, 1, 1.02 },
+	{ -1.94, 0.04, 2.05, 0.55, 0.39, 0.7, -7.2, 4.9, -6.2, 1, 1 },
+	{ 0.04, 0.01, -2.03, 0.62, 0.35, 0.69, 20, 4.1, 2.9, 2, 0.94 },
+	{ -0.03, 0.03, -0.01, 0.58, 0.37, 0.62, 11.1, 3.7, -6.3, 1, 0.99 },
+	{ -0.02, -0.01, 1.99, 0.64, 0.43, 0.62, -24.2, -2.8, 2.8, 1, 1 },
+	{ 2.03, -0.01, -1.9, 0.61, 0.45, 0.55, -2.1, -2.6, -6.9, 1, 0.88 },
+	{ 2.05, 0, -0.04, 0.67, 0.36, 0.56, 13, 4.3, 2.1, 2, 0.99 },
+	{ 2.06, -0.02, 1.98, 0.52, 0.45, 0.5, 17.2, -6.9, 2.6, 2, 1.05 },
+}
+
+local EARTH_COLOR = Color3.fromRGB(150, 122, 88)
+
+-- Дикий булыжник 8x1x8: неровные, слегка наклонённые камни разной высоты в земляном основании.
+-- Бордюров нет: плитки стыкуются с любой стороны.
+local function cobbleRoad(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	stone(list, "Trim", Vector3.new(8, 0.6, 8), CFrame.new(0, -0.2, 0), nil, Enum.Material.Sand, EARTH_COLOR)
+	for _, s in COBBLES do
+		local slate = s[10] == 1
+		stone(
+			list,
+			if slate then "Main" else "Trim",
+			Vector3.new(s[4], s[5], s[6]),
+			CFrame.new(s[1], s[2], s[3])
+				* CFrame.Angles(0, math.rad(s[7]), 0)
+				* CFrame.Angles(math.rad(s[8]), 0, math.rad(s[9])),
+			s[11],
+			if slate then Enum.Material.Slate else Enum.Material.Cobblestone
+		)
+	end
+	return list
+end
+
+-- Римская мозаика 8x1x8 (вдоль Z): крупные гладкие плиты, по бокам — кайма из цветной полосы
+-- с золотыми ромбами и золотой нитью, ступенчатый бордюр и медальон в центре.
+local function mosaicRoad(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	local diamond = CFrame.Angles(0, math.rad(45), 0)
+	block(list, "Trim", 8, 0.5, 8, 0, -0.25, 0)
+	for _, sx in { -1, 1 } do
+		block(list, "Trim", 0.4, 0.2, 8, sx * 3.8, 0.1, 0) -- нижняя ступень бордюра
+		block(list, "Main", 0.4, 0.5, 8, sx * 3.4, 0.25, 0) -- верхняя ступень бордюра
+		block(list, "Accent", 0.3, 0.3, 8, sx * 3.05, 0.15, 0) -- золотая нить
+		block(list, "Detail", 0.4, 0.26, 8, sx * 2.7, 0.13, 0) -- цветная полоса каймы
+		for k = 0, 3 do
+			add(list, "Block", "Accent", Vector3.new(0.26, 0.27, 0.26), CFrame.new(sx * 2.7, 0.185, -3 + 2 * k) * diamond)
+		end
+		for _, sz in { -1, 1 } do
+			-- Плиты в шахматном порядке чуть отличаются тоном.
+			stone(
+				list,
+				"Main",
+				Vector3.new(2.44, 0.3, 3.94),
+				CFrame.new(sx * 1.25, 0.15, sz * 2),
+				if sx * sz > 0 then 1 else 0.94
+			)
+		end
+	end
+	add(list, "Block", "Accent", Vector3.new(1.7, 0.28, 1.7), CFrame.new(0, 0.19, 0) * diamond)
+	add(list, "Block", "Detail", Vector3.new(1.3, 0.26, 1.3), CFrame.new(0, 0.23, 0) * diamond)
+	return list
+end
+
+-- x, y, длина, высота, глубина, оттенок
+local RUIN_STONES: { { number } } = {
+	{ -3.795, -2.88, 4.41, 2.24, 3.7, 0.84 },
+	{ 0, -2.88, 2.82, 2.24, 4, 0.83 },
+	{ 3.795, -2.88, 4.41, 2.24, 4, 0.92 },
+	{ -4.795, -0.78, 2.41, 1.64, 4, 0.84 },
+	{ -2, -0.78, 2.82, 1.64, 4, 0.96 },
+	{ 1.25, -0.78, 3.32, 1.64, 3.7, 0.89 },
+	{ 4.545, -0.78, 2.91, 1.64, 4, 1 },
+	{ -3.795, 1.22, 4.41, 2.04, 4, 0.91 },
+	{ 0.5, 1.22, 3.82, 2.04, 3.85, 0.99 },
+	{ 4.295, 1.22, 3.41, 2.04, 4, 0.99 },
+	{ -4.045, 3, 3.91, 1.2, 3.85, 1.03 },
+	{ -0.25, 3.2, 3.32, 1.6, 3.85, 0.87 },
+	{ 3.795, 3.2, 4.41, 1.6, 3.7, 0.99 },
+}
+
+-- Древняя кладка 12x8x4: крупные грубо отёсанные блоки разного размера и глубины
+-- (циклопическая кладка) с глубокими швами; один камень верхнего ряда выщерблен.
+local function ruinWall(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	stone(list, "Trim", Vector3.new(11.6, 7.4, 3), CFrame.new(0, -0.2, 0), 0.55) -- тёмная глубина швов
+	for _, s in RUIN_STONES do
+		stone(list, "Main", Vector3.new(s[3], s[4], s[5]), CFrame.new(s[1], s[2], 0), s[6], Enum.Material.Slate)
+	end
+	return list
+end
+
 local PREFABS: { [string]: Prefab } = {
+	BrickWall = { build = brickWall, collision = "bounds" },
+	CobbleRoad = { build = cobbleRoad, collision = "bounds" },
+	MosaicRoad = { build = mosaicRoad, collision = "bounds" },
+	RuinWall = { build = ruinWall, collision = "bounds" },
 	OrnateRoad = { build = ornateRoad, collision = "bounds" },
 	OrnateWall = { build = ornateWall, collision = "bounds" },
 	OrnateCube = { build = ornateCube, collision = "bounds" },
@@ -660,8 +824,17 @@ function BlockLibrary.buildModel(shapeId: string, factionId: string?, cframe: CF
 	for _, piece in pieces do
 		local part = BlockLibrary.makePart(piece)
 		local look = palette[piece.role]
-		part.Material = look.material
-		part.Color = look.color
+		local color = piece.color or look.color
+		local shade = piece.shade
+		if shade then
+			color = Color3.new(
+				math.clamp(color.R * shade, 0, 1),
+				math.clamp(color.G * shade, 0, 1),
+				math.clamp(color.B * shade, 0, 1)
+			)
+		end
+		part.Material = piece.material or look.material
+		part.Color = color
 		part.Anchored = true
 		part.CanCollide = true
 		part.CFrame = cframe * piece.cframe
@@ -738,6 +911,31 @@ BlockCatalog.List = {
 		displayName = "Орнаментный блок",
 		description = "Столбики и вставки 4×4×4",
 		category = "Ornate",
+	},
+	{
+		id = "BrickWall",
+		displayName = "Кирпичная кладка",
+		description = "Ряды вперевязку 12×8×4",
+		category = "Ornate",
+	},
+	{
+		id = "RuinWall",
+		displayName = "Древняя кладка",
+		description = "Грубые глыбы 12×8×4",
+		category = "Ornate",
+	},
+	{
+		id = "CobbleRoad",
+		displayName = "Дикий булыжник",
+		description = "Неровная тропа 8×1×8",
+		category = "Ornate",
+	},
+	{
+		id = "MosaicRoad",
+		displayName = "Римская мозаика",
+		description = "Плиты и кайма 8×1×8",
+		category = "Ornate",
+		featured = { "Rome" },
 	},
 
 	-- Колонны
@@ -1217,6 +1415,12 @@ BuildConfig.Shapes = {
 	OrnateRoad = { id = "OrnateRoad", size = Vector3.new(8, 1, 8), prefab = true },
 	OrnateWall = { id = "OrnateWall", size = Vector3.new(12, 8, 4), prefab = true },
 	OrnateCube = { id = "OrnateCube", size = Vector3.new(4, 4, 4), prefab = true },
+
+	-- Каменная кладка: стены и дороги
+	BrickWall = { id = "BrickWall", size = Vector3.new(12, 8, 4), prefab = true },
+	RuinWall = { id = "RuinWall", size = Vector3.new(12, 8, 4), prefab = true },
+	CobbleRoad = { id = "CobbleRoad", size = Vector3.new(8, 1, 8), prefab = true },
+	MosaicRoad = { id = "MosaicRoad", size = Vector3.new(8, 1, 8), prefab = true },
 } :: { [string]: Shape }
 
 -- Базовый материал блоков по фракции: песчаник для Египта, мрамор для Рима и Греции.

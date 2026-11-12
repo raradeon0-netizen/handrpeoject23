@@ -58,6 +58,31 @@ BlockCatalog.List = {
 		description = "Столбики и вставки 4×4×4",
 		category = "Ornate",
 	},
+	{
+		id = "BrickWall",
+		displayName = "Кирпичная кладка",
+		description = "Ряды вперевязку 12×8×4",
+		category = "Ornate",
+	},
+	{
+		id = "RuinWall",
+		displayName = "Древняя кладка",
+		description = "Грубые глыбы 12×8×4",
+		category = "Ornate",
+	},
+	{
+		id = "CobbleRoad",
+		displayName = "Дикий булыжник",
+		description = "Неровная тропа 8×1×8",
+		category = "Ornate",
+	},
+	{
+		id = "MosaicRoad",
+		displayName = "Римская мозаика",
+		description = "Плиты и кайма 8×1×8",
+		category = "Ornate",
+		featured = { "Rome" },
+	},
 
 	-- Колонны
 	{
