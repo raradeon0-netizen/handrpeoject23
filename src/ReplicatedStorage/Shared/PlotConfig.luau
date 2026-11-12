@@ -24,10 +24,21 @@ PlotConfig.RemoteName = "SelectFaction"
 PlotConfig.PlotSize = 200
 PlotConfig.PlotThickness = 2
 
+-- Размеры плиты, между которыми игрок переключается в настройках (PlotResizer).
+PlotConfig.SizePresets = {
+	{ size = 100, label = "Маленькая" },
+	{ size = 200, label = "Стандартная" },
+	{ size = 300, label = "Большая" },
+	{ size = 400, label = "Огромная" },
+} :: { { size: number, label: string } }
+PlotConfig.ResizeRemoteName = "ResizePlot" -- RemoteFunction: размер -> (успех, сообщение, размер)
+PlotConfig.ResizeCooldown = 0.5 -- секунд между сменами размера
+
 -- Сетка участков. Начало сетки далеко от лобби (0,0,0) и от стартовых платформ
 -- (±200). Шаг 400 при размере 200 даёт 200 studs пустоты между соседями.
 PlotConfig.GridOrigin = Vector3.new(1000, 1, 1000) -- центр участка №0 (верх участка на Y = 2)
-PlotConfig.GridSpacing = 400
+-- Расстояние между центрами участков: даже две плиты 400×400 с запасом не соприкасаются.
+PlotConfig.GridSpacing = 640
 PlotConfig.GridColumns = 10 -- сколько участков в ряду
 
 -- Максимальная высота постройки над поверхностью участка (для проверки прав).

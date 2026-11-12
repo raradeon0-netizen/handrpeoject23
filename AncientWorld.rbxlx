@@ -1334,10 +1334,21 @@ PlotConfig.RemoteName = "SelectFaction"
 PlotConfig.PlotSize = 200
 PlotConfig.PlotThickness = 2
 
+-- Размеры плиты, между которыми игрок переключается в настройках (PlotResizer).
+PlotConfig.SizePresets = {
+	{ size = 100, label = "Маленькая" },
+	{ size = 200, label = "Стандартная" },
+	{ size = 300, label = "Большая" },
+	{ size = 400, label = "Огромная" },
+} :: { { size: number, label: string } }
+PlotConfig.ResizeRemoteName = "ResizePlot" -- RemoteFunction: размер -> (успех, сообщение, размер)
+PlotConfig.ResizeCooldown = 0.5 -- секунд между сменами размера
+
 -- Сетка участков. Начало сетки далеко от лобби (0,0,0) и от стартовых платформ
 -- (±200). Шаг 400 при размере 200 даёт 200 studs пустоты между соседями.
 PlotConfig.GridOrigin = Vector3.new(1000, 1, 1000) -- центр участка №0 (верх участка на Y = 2)
-PlotConfig.GridSpacing = 400
+-- Расстояние между центрами участков: даже две плиты 400×400 с запасом не соприкасаются.
+PlotConfig.GridSpacing = 640
 PlotConfig.GridColumns = 10 -- сколько участков в ряду
 
 -- Максимальная высота постройки над поверхностью участка (для проверки прав).
@@ -1969,7 +1980,8 @@ function BuildGrid.computePlacement(req: PlacementRequest): Placement?
 		local step = req.gridStep
 		if step > 0 then
 			local normalAxis = dominantAxis(n)
-			local origins = Vector3.new(-plot.Size.X / 2, surfaceY(plot), -plot.Size.Z / 2)
+			-- Сетка отсчитывается от центра плиты: при смене её размера линии не сдвигаются.
+			local origins = Vector3.new(0, surfaceY(plot), 0)
 			for axis = 1, 3 do
 				if axis ~= normalAxis then
 					-- Тонкая полоса резака встаёт на линию сетки серединой, а не краем.
@@ -2201,7 +2213,7 @@ function BuildGrid.snapMove(
 	if gridStep <= 0 then
 		return round3(distance)
 	end
-	local origins = Vector3.new(-plot.Size.X / 2, surfaceY(plot), -plot.Size.Z / 2)
+	local origins = Vector3.new(0, surfaceY(plot), 0)
 	local snapped = snapAxis(start + distance, component(extents, axis), component(origins, axis), gridStep)
 	return round3(snapped - start)
 end
@@ -2595,6 +2607,7 @@ local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 
 local PlotAllocator = require(script.Parent.PlotAllocator)
 local PlotBuilder = require(script.Parent.PlotBuilder)
+local PlotResizer = require(script.Parent.PlotResizer)
 local PlotOwnership = require(script.Parent.PlotOwnership)
 local CharacterHider = require(script.Parent.CharacterHider)
 local PlotTeleporter = require(script.Parent.PlotTeleporter)
@@ -2610,6 +2623,10 @@ end
 local selectFaction = Instance.new("RemoteFunction")
 selectFaction.Name = PlotConfig.RemoteName
 selectFaction.Parent = ReplicatedStorage.Shared
+
+local resizePlot = Instance.new("RemoteFunction")
+resizePlot.Name = PlotConfig.ResizeRemoteName
+resizePlot.Parent = ReplicatedStorage.Shared
 
 local busyPlayers: { [Player]: boolean } = {} -- защита от повторных запросов
 
@@ -2695,8 +2712,31 @@ selectFaction.OnServerInvoke = function(player: Player, factionId: unknown): boo
 end
 
 -- Шаг 4. Игрок вышел: удаляем участок и освобождаем слот для следующих.
+-- Смена размера плиты из настроек клиента. Возвращает (успех, сообщение, нынешний размер).
+local lastResize: { [Player]: number } = {}
+
+resizePlot.OnServerInvoke = function(player: Player, size: unknown): (boolean, string?, number?)
+	local claim = PlotOwnership.getClaim(player)
+	if not claim then
+		return false, "Сначала выберите цивилизацию и получите участок", nil
+	end
+	local current = claim.plot.Size.X
+	if typeof(size) ~= "number" then
+		return false, nil, current
+	end
+	local now = os.clock()
+	if now - (lastResize[player] or -math.huge) < PlotConfig.ResizeCooldown then
+		return false, "Не так быстро", current
+	end
+	lastResize[player] = now
+
+	local ok, message = PlotResizer.resize(claim.plot, size, claim.factionId)
+	return ok, message, claim.plot.Size.X
+end
+
 Players.PlayerRemoving:Connect(function(player: Player)
 	busyPlayers[player] = nil
+	lastResize[player] = nil
 	releasePlayer(player)
 end)
 
@@ -2822,8 +2862,8 @@ end
 
 -- Бордюр: четыре планки по краю участка. Длинные (север/юг) идут на всю ширину,
 -- короткие (восток/запад) заходят между ними, чтобы планки не пересекались.
-local function addBorder(decor: Instance, center: Vector3, style: PlotConfig.PlotStyle)
-	local half = PlotConfig.PlotSize / 2
+local function addBorder(decor: Instance, center: Vector3, style: PlotConfig.PlotStyle, plotSize: number)
+	local half = plotSize / 2
 	local width = PlotConfig.BorderWidth
 	local height = PlotConfig.BorderHeight
 	local surfaceY = center.Y + PlotConfig.PlotThickness / 2
@@ -2841,8 +2881,8 @@ local function addBorder(decor: Instance, center: Vector3, style: PlotConfig.Plo
 		)
 	end
 
-	local long = PlotConfig.PlotSize
-	local short = PlotConfig.PlotSize - width * 2
+	local long = plotSize
+	local short = plotSize - width * 2
 	rail("BorderNorth", Vector3.new(long, height, width), 0, -offset)
 	rail("BorderSouth", Vector3.new(long, height, width), 0, offset)
 	rail("BorderEast", Vector3.new(width, height, short), offset, 0)
@@ -2911,9 +2951,9 @@ local function addBlock(decor: Instance, name: string, base: Vector3, style: Plo
 end
 
 -- Угловые элементы: по одному в каждом углу, вплотную к внешнему краю участка.
-local function addCorners(decor: Instance, center: Vector3, style: PlotConfig.PlotStyle)
+local function addCorners(decor: Instance, center: Vector3, style: PlotConfig.PlotStyle, plotSize: number)
 	local surfaceY = center.Y + PlotConfig.PlotThickness / 2
-	local inset = PlotConfig.PlotSize / 2 - PlotConfig.CornerBaseSize / 2
+	local inset = plotSize / 2 - PlotConfig.CornerBaseSize / 2
 	local corners = {
 		{ name = "CornerNE", sx = 1, sz = -1 },
 		{ name = "CornerSE", sx = 1, sz = 1 },
@@ -2928,6 +2968,40 @@ local function addCorners(decor: Instance, center: Vector3, style: PlotConfig.Pl
 		else
 			addBlock(decor, corner.name, base, style)
 		end
+	end
+end
+
+-- Оформление плиты под её нынешний размер: бордюр, угловые элементы и сетка.
+-- Вызывается при постройке участка и после каждой смены размера (PlotResizer).
+function PlotBuilder.decorate(plot: Part, factionId: string)
+	local style = PlotConfig.Styles[factionId] or PlotConfig.DefaultStyle
+	local size = plot.Size.X
+
+	local existing = plot:FindFirstChild("Decor")
+	local decor: Instance
+	if existing then
+		decor = existing
+	else
+		local created = Instance.new("Folder")
+		created.Name = "Decor"
+		created.Parent = plot
+		decor = created
+	end
+	decor:ClearAllChildren()
+	addBorder(decor, plot.Position, style, size)
+	addCorners(decor, plot.Position, style, size)
+
+	-- Линии сетки проходят через центр плиты — как и привязка блоков (BuildGrid), поэтому
+	-- при любом размере нарисованная сетка совпадает с той, по которой встают блоки.
+	local grid = plot:FindFirstChild("BuildGrid")
+	if not grid then
+		addGrid(plot)
+		grid = plot:FindFirstChild("BuildGrid")
+	end
+	if grid and grid:IsA("Texture") then
+		local offset = (size / 2) % PlotConfig.GridStudsPerTile
+		grid.OffsetStudsU = offset
+		grid.OffsetStudsV = offset
 	end
 end
 
@@ -2954,12 +3028,7 @@ function PlotBuilder.build(parent: Instance, player: Player, factionId: string, 
 
 	-- Шаг 4. Оформление: сетка, бордюр и углы. Декор лежит внутри участка (папка Decor),
 	-- поэтому исчезает вместе с ним, когда PlotService удаляет участок.
-	addGrid(plot)
-	local decor = Instance.new("Folder")
-	decor.Name = "Decor"
-	addBorder(decor, center, style)
-	addCorners(decor, center, style)
-	decor.Parent = plot
+	PlotBuilder.decorate(plot, factionId)
 
 	-- Папка для построек игрока (заполняет BuildService, имя = BuildConfig.BlocksFolderName).
 	-- Лежит внутри участка, поэтому блоки удаляются вместе с ним.
@@ -4237,7 +4306,7 @@ return TabletFactory
 -- что и при обычной установке, а затем на него накладываются изменения.
 --
 -- Формат (короткие ключи — сохранение компактнее):
---   { v = 1, blocks = { Entry } }
+--   { v = 1, plotSize = сторона плиты, blocks = { Entry } }
 --   Entry: s — id формы, c — CFrame относительно плиты, z — свой размер, o — светильник погашен,
 --          для одиночного блока поля детали лежат прямо в Entry,
 --          для составного: q — { [номер детали] = поля детали }, x — номера удалённых деталей.
@@ -4260,6 +4329,7 @@ local TabletFactory = require(script.Parent.TabletFactory)
 
 export type SaveData = {
 	v: number,
+	plotSize: number?, -- сторона плиты (нет в старых сохранениях)
 	blocks: { { [string]: any } },
 }
 
@@ -4371,7 +4441,7 @@ function PlotSerializer.serialize(plot: BasePart, blocks: Instance, factionId: s
 		end
 		table.insert(entries, entry)
 	end
-	return { v = VERSION, blocks = entries }
+	return { v = VERSION, plotSize = math.round(plot.Size.X), blocks = entries }
 end
 
 -- ===== Загрузка =====
@@ -4590,6 +4660,7 @@ local RunService = game:GetService("RunService")
 local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 
 local PlotOwnership = require(script.Parent.PlotOwnership)
+local PlotResizer = require(script.Parent.PlotResizer)
 local PlotSerializer = require(script.Parent.PlotSerializer)
 
 type StatusKind = "ok" | "error" | "info"
@@ -4763,6 +4834,11 @@ local function load(player: Player, claim: PlotOwnership.Claim, replace: boolean
 	if replace then
 		blocks:ClearAllChildren()
 	end
+	-- Сначала плита принимает сохранённый размер: иначе постройки могли бы не поместиться.
+	local savedSize = if typeof(data) == "table" then data.plotSize else nil
+	if typeof(savedSize) == "number" then
+		PlotResizer.resize(claim.plot, savedSize, claim.factionId)
+	end
 	local restored = PlotSerializer.restore(claim.plot, blocks, data, claim.factionId, player, stillValid)
 	busy[userId] = nil
 	if stillValid() then
@@ -4833,6 +4909,72 @@ function SaveManager.start()
 end
 
 return SaveManager
+]]></string></Properties></Item>
+<Item class="ModuleScript" referent="RBXBUILD63"><Properties><string name="Name">PlotResizer</string><string name="Source"><![CDATA[--!strict
+-- PlotResizer (сервер): смена размера строительной плиты между пресетами PlotConfig.SizePresets.
+-- Центр плиты остаётся на месте, поэтому постройки не сдвигаются; бордюр, угловые элементы
+-- и сетка перестраиваются под новые края (PlotBuilder.decorate).
+-- Проверки стройки (BuildGrid.isInsideArea, PlotOwnership.getOwnerAt) читают plot.Size
+-- напрямую, поэтому новые границы начинают действовать сразу.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
+local BuildGrid = require(ReplicatedStorage.Shared.BuildGrid)
+local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
+
+local PlotBuilder = require(script.Parent.PlotBuilder)
+
+local EPSILON = 0.01
+
+local PlotResizer = {}
+
+function PlotResizer.isPreset(size: unknown): boolean
+	for _, preset in PlotConfig.SizePresets do
+		if preset.size == size then
+			return true
+		end
+	end
+	return false
+end
+
+-- Помещаются ли все постройки в зону стройки плиты размера size.
+local function blocksFit(plot: Part, size: number): boolean
+	local blocks = plot:FindFirstChild(BuildConfig.BlocksFolderName)
+	if not blocks then
+		return true
+	end
+	local limit = size / 2 - BuildConfig.EdgeInset + EPSILON
+	for _, block in blocks:GetChildren() do
+		local center, extents = BuildGrid.getBlockBounds(plot, block)
+		if center and extents then
+			if math.abs(center.X) + extents.X / 2 > limit or math.abs(center.Z) + extents.Z / 2 > limit then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+-- Меняет размер плиты. Возвращает false и причину, если размер недопустим или при уменьшении
+-- какие-то постройки оказались бы за краем.
+function PlotResizer.resize(plot: Part, size: number, factionId: string): (boolean, string?)
+	if not PlotResizer.isPreset(size) then
+		return false, "Такого размера плиты нет"
+	end
+	if math.abs(plot.Size.X - size) < EPSILON then
+		return true, nil
+	end
+	if size < plot.Size.X and not blocksFit(plot, size) then
+		return false, "Плиту не уменьшить: сначала уберите постройки у её краёв"
+	end
+
+	plot.Size = Vector3.new(size, PlotConfig.PlotThickness, size)
+	PlotBuilder.decorate(plot, factionId)
+	return true, nil
+end
+
+return PlotResizer
 ]]></string></Properties></Item>
 </Item>
   </Item>
@@ -5236,9 +5378,11 @@ return BlockPickerController
 -- Состояния: "Title" -> "FactionSelect" -> закрыто (игрок в мире),
 -- плюс "Settings" (открывается с титульного экрана).
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
+local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 local MenuView = require(script.Parent.MenuView)
 local AudioController = require(script.Parent.AudioController)
 local BuildEffects = require(script.Parent.BuildEffects)
@@ -5267,10 +5411,14 @@ function MenuController.start(playerGui: PlayerGui)
 	local inGame = false -- игрок на участке: работает меню паузы
 	local currentState: State = "Title"
 	local settingsReturn: State = "Title" -- куда вернуться из окна настроек
+	local refreshSettings: (() -> ())? = nil -- обновляет подписи настроек при открытии окна
 
 	-- Показывает только нужный экран.
 	local function setState(state: State)
 		currentState = state
+		if state == "Settings" and refreshSettings then
+			refreshSettings()
+		end
 		view.pauseScreen.Visible = state == "Pause"
 		-- Пока открыто любое окно меню, редактор не реагирует на клавиши и клики.
 		BuildController.setPaused(state ~= "Closed")
@@ -5407,6 +5555,76 @@ function MenuController.start(playerGui: PlayerGui)
 	end)
 	refreshToggles()
 
+	-- ===== Размер плиты (окно «Настройки») =====
+	local knownPlotSize = PlotConfig.PlotSize
+	local resizing = false
+	local noteToken = 0
+
+	local function refreshPlotSize()
+		local plot = BuildCameraController.getPlot()
+		if plot then
+			knownPlotSize = math.round(plot.Size.X)
+		end
+		local label = ""
+		for _, preset in PlotConfig.SizePresets do
+			if preset.size == knownPlotSize then
+				label = " (" .. preset.label .. ")"
+			end
+		end
+		view.plotSizeButton.Text = string.format("Размер плиты: %d×%d%s", knownPlotSize, knownPlotSize, label)
+	end
+	refreshSettings = refreshPlotSize
+
+	local function showPlotNote(text: string)
+		noteToken += 1
+		local token = noteToken
+		view.plotSizeNote.Text = text
+		view.plotSizeNote.Visible = true
+		task.delay(4, function()
+			if noteToken == token then
+				view.plotSizeNote.Visible = false
+			end
+		end)
+	end
+
+	-- Клик выбирает следующий пресет по кругу и просит сервер перестроить плиту.
+	view.plotSizeButton.Activated:Connect(function()
+		if resizing then
+			return
+		end
+		refreshPlotSize()
+		local nextSize = PlotConfig.SizePresets[1].size
+		for index, preset in PlotConfig.SizePresets do
+			if preset.size == knownPlotSize then
+				nextSize = PlotConfig.SizePresets[index % #PlotConfig.SizePresets + 1].size
+			end
+		end
+
+		resizing = true
+		task.spawn(function()
+			local remote = ReplicatedStorage.Shared:FindFirstChild(PlotConfig.ResizeRemoteName)
+			local ok, success, message, current = false, false, nil, nil
+			if remote and remote:IsA("RemoteFunction") then
+				ok, success, message, current = pcall(function()
+					return remote:InvokeServer(nextSize)
+				end)
+			end
+			resizing = false
+			if typeof(current) == "number" then
+				knownPlotSize = math.round(current)
+			end
+			if not ok then
+				showPlotNote("Сервер не ответил, попробуйте ещё раз")
+			elseif typeof(message) == "string" then
+				showPlotNote(message)
+			elseif success == true then
+				showPlotNote("Плита перестроена")
+			end
+			refreshPlotSize()
+		end)
+	end)
+	refreshPlotSize()
+
 	-- ===== Меню паузы =====
 	-- Escape занят меню Roblox, поэтому пауза — кнопка «Меню» в углу и клавиши из PAUSE_KEYS.
 	local function togglePause()
@@ -5486,6 +5704,8 @@ export type View = {
 	muteButton: TextButton,
 	sfxButton: TextButton, -- «Звуки стройки (SFX): Вкл / Выкл»
 	animationButton: TextButton, -- «Анимации стройки: Выкл / Обычная / Мощная»
+	plotSizeButton: TextButton, -- «Размер плиты: 200×200 (Стандартная)»
+	plotSizeNote: TextLabel, -- ответ сервера на смену размера
 	pauseScreen: Frame, -- меню паузы (во время игры)
 	resumeButton: TextButton,
 	pauseSettingsButton: TextButton,
@@ -5570,7 +5790,7 @@ function MenuView.build(playerGui: PlayerGui): View
 	-- Шаг 4. Окно настроек: выбор размера интерфейса и кнопка «Закрыть».
 	local settingsScreen = UIFactory.screen("SettingsScreen", gui)
 	settingsScreen.Active = true -- открытое из паузы окно не пропускает клики в мир
-	local settingsPanel = UIFactory.panel("Panel", UDim2.fromOffset(480, 510), settingsScreen)
+	local settingsPanel = UIFactory.panel("Panel", UDim2.fromOffset(480, 580), settingsScreen)
 	UIFactory.verticalList(settingsPanel, 16)
 
 	local settingsTitle = UIFactory.label("Title", "Настройки", 36, settingsPanel)
@@ -5683,10 +5903,23 @@ function MenuView.build(playerGui: PlayerGui): View
 	animationButton.TextSize = 19
 	animationButton.LayoutOrder = 7
 
+	-- Размер строительной плиты: кнопка перебирает пресеты, под ней — ответ сервера.
+	local plotSizeButton = UIFactory.button("PlotSizeButton", "", Theme.SecondaryButtonColor, settingsPanel)
+	plotSizeButton.Size = UDim2.new(0.85, 0, 0, 38)
+	plotSizeButton.TextSize = 19
+	plotSizeButton.LayoutOrder = 8
+
+	local plotSizeNote = UIFactory.label("PlotSizeNote", "", 16, settingsPanel)
+	plotSizeNote.Font = Theme.BodyFont
+	plotSizeNote.TextColor3 = Theme.SubTextColor
+	plotSizeNote.Size = UDim2.new(1, 0, 0, 20)
+	plotSizeNote.LayoutOrder = 9
+	plotSizeNote.Visible = false -- скрытая строка не занимает места в списке
+
 	local closeSettingsButton = UIFactory.button("CloseButton", "Закрыть", Theme.PrimaryButtonColor, settingsPanel)
 	closeSettingsButton.Size = UDim2.new(0.5, 0, 0, 44)
 	closeSettingsButton.TextSize = 22
-	closeSettingsButton.LayoutOrder = 8
+	closeSettingsButton.LayoutOrder = 10
 
 	-- Шаг 5. Добавляем GUI в PlayerGui последним, когда иерархия уже собрана.
 	-- Меню паузы (во время игры): продолжить, настройки, выход в главное меню.
@@ -5733,6 +5966,8 @@ function MenuView.build(playerGui: PlayerGui): View
 		muteButton = muteButton,
 		sfxButton = sfxButton,
 		animationButton = animationButton,
+		plotSizeButton = plotSizeButton,
+		plotSizeNote = plotSizeNote,
 		pauseScreen = pauseScreen,
 		resumeButton = resumeButton,
 		pauseSettingsButton = pauseSettingsButton,
@@ -6099,6 +6334,26 @@ function BuildCameraController.start(plot: Part)
 		connections = {},
 	}
 	session = s
+
+	-- Плиту могут перестроить в другой размер: границы полёта следуют за её краями.
+	table.insert(
+		s.connections,
+		plot:GetPropertyChangedSignal("Size"):Connect(function()
+			local newHalf = plot.Size / 2
+			local top = plot.Position.Y + newHalf.Y
+			s.minBounds = Vector3.new(
+				plot.Position.X - newHalf.X - CONFIG.BoundsMargin,
+				top + CONFIG.MinHeight,
+				plot.Position.Z - newHalf.Z - CONFIG.BoundsMargin
+			)
+			s.maxBounds = Vector3.new(
+				plot.Position.X + newHalf.X + CONFIG.BoundsMargin,
+				top + CONFIG.MaxHeight,
+				plot.Position.Z + newHalf.Z + CONFIG.BoundsMargin
+			)
+			s.targetPos = clampToBounds(s, s.targetPos)
+		end)
+	)
 
 	-- Шаг 4. Ввод мышью: ПКМ крутит камеру, колесо двигает вдоль взгляда.
 	table.insert(

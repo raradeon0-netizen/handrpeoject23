@@ -5,7 +5,7 @@
 -- что и при обычной установке, а затем на него накладываются изменения.
 --
 -- Формат (короткие ключи — сохранение компактнее):
---   { v = 1, blocks = { Entry } }
+--   { v = 1, plotSize = сторона плиты, blocks = { Entry } }
 --   Entry: s — id формы, c — CFrame относительно плиты, z — свой размер, o — светильник погашен,
 --          для одиночного блока поля детали лежат прямо в Entry,
 --          для составного: q — { [номер детали] = поля детали }, x — номера удалённых деталей.
@@ -28,6 +28,7 @@ local TabletFactory = require(script.Parent.TabletFactory)
 
 export type SaveData = {
 	v: number,
+	plotSize: number?, -- сторона плиты (нет в старых сохранениях)
 	blocks: { { [string]: any } },
 }
 
@@ -139,7 +140,7 @@ function PlotSerializer.serialize(plot: BasePart, blocks: Instance, factionId: s
 		end
 		table.insert(entries, entry)
 	end
-	return { v = VERSION, blocks = entries }
+	return { v = VERSION, plotSize = math.round(plot.Size.X), blocks = entries }
 end
 
 -- ===== Загрузка =====

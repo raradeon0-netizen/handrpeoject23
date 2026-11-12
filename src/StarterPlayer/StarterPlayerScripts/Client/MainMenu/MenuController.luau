@@ -3,9 +3,11 @@
 -- Состояния: "Title" -> "FactionSelect" -> закрыто (игрок в мире),
 -- плюс "Settings" (открывается с титульного экрана).
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
+local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 local MenuView = require(script.Parent.MenuView)
 local AudioController = require(script.Parent.AudioController)
 local BuildEffects = require(script.Parent.BuildEffects)
@@ -34,10 +36,14 @@ function MenuController.start(playerGui: PlayerGui)
 	local inGame = false -- игрок на участке: работает меню паузы
 	local currentState: State = "Title"
 	local settingsReturn: State = "Title" -- куда вернуться из окна настроек
+	local refreshSettings: (() -> ())? = nil -- обновляет подписи настроек при открытии окна
 
 	-- Показывает только нужный экран.
 	local function setState(state: State)
 		currentState = state
+		if state == "Settings" and refreshSettings then
+			refreshSettings()
+		end
 		view.pauseScreen.Visible = state == "Pause"
 		-- Пока открыто любое окно меню, редактор не реагирует на клавиши и клики.
 		BuildController.setPaused(state ~= "Closed")
@@ -173,6 +179,76 @@ function MenuController.start(playerGui: PlayerGui)
 		refreshToggles()
 	end)
 	refreshToggles()
+
+	-- ===== Размер плиты (окно «Настройки») =====
+	local knownPlotSize = PlotConfig.PlotSize
+	local resizing = false
+	local noteToken = 0
+
+	local function refreshPlotSize()
+		local plot = BuildCameraController.getPlot()
+		if plot then
+			knownPlotSize = math.round(plot.Size.X)
+		end
+		local label = ""
+		for _, preset in PlotConfig.SizePresets do
+			if preset.size == knownPlotSize then
+				label = " (" .. preset.label .. ")"
+			end
+		end
+		view.plotSizeButton.Text = string.format("Размер плиты: %d×%d%s", knownPlotSize, knownPlotSize, label)
+	end
+	refreshSettings = refreshPlotSize
+
+	local function showPlotNote(text: string)
+		noteToken += 1
+		local token = noteToken
+		view.plotSizeNote.Text = text
+		view.plotSizeNote.Visible = true
+		task.delay(4, function()
+			if noteToken == token then
+				view.plotSizeNote.Visible = false
+			end
+		end)
+	end
+
+	-- Клик выбирает следующий пресет по кругу и просит сервер перестроить плиту.
+	view.plotSizeButton.Activated:Connect(function()
+		if resizing then
+			return
+		end
+		refreshPlotSize()
+		local nextSize = PlotConfig.SizePresets[1].size
+		for index, preset in PlotConfig.SizePresets do
+			if preset.size == knownPlotSize then
+				nextSize = PlotConfig.SizePresets[index % #PlotConfig.SizePresets + 1].size
+			end
+		end
+
+		resizing = true
+		task.spawn(function()
+			local remote = ReplicatedStorage.Shared:FindFirstChild(PlotConfig.ResizeRemoteName)
+			local ok, success, message, current = false, false, nil, nil
+			if remote and remote:IsA("RemoteFunction") then
+				ok, success, message, current = pcall(function()
+					return remote:InvokeServer(nextSize)
+				end)
+			end
+			resizing = false
+			if typeof(current) == "number" then
+				knownPlotSize = math.round(current)
+			end
+			if not ok then
+				showPlotNote("Сервер не ответил, попробуйте ещё раз")
+			elseif typeof(message) == "string" then
+				showPlotNote(message)
+			elseif success == true then
+				showPlotNote("Плита перестроена")
+			end
+			refreshPlotSize()
+		end)
+	end)
+	refreshPlotSize()
 
 	-- ===== Меню паузы =====
 	-- Escape занят меню Roblox, поэтому пауза — кнопка «Меню» в углу и клавиши из PAUSE_KEYS.

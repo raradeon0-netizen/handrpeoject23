@@ -14,6 +14,7 @@ local PlotConfig = require(ReplicatedStorage.Shared.PlotConfig)
 
 local PlotAllocator = require(script.Parent.PlotAllocator)
 local PlotBuilder = require(script.Parent.PlotBuilder)
+local PlotResizer = require(script.Parent.PlotResizer)
 local PlotOwnership = require(script.Parent.PlotOwnership)
 local CharacterHider = require(script.Parent.CharacterHider)
 local PlotTeleporter = require(script.Parent.PlotTeleporter)
@@ -29,6 +30,10 @@ end
 local selectFaction = Instance.new("RemoteFunction")
 selectFaction.Name = PlotConfig.RemoteName
 selectFaction.Parent = ReplicatedStorage.Shared
+
+local resizePlot = Instance.new("RemoteFunction")
+resizePlot.Name = PlotConfig.ResizeRemoteName
+resizePlot.Parent = ReplicatedStorage.Shared
 
 local busyPlayers: { [Player]: boolean } = {} -- защита от повторных запросов
 
@@ -114,8 +119,31 @@ selectFaction.OnServerInvoke = function(player: Player, factionId: unknown): boo
 end
 
 -- Шаг 4. Игрок вышел: удаляем участок и освобождаем слот для следующих.
+-- Смена размера плиты из настроек клиента. Возвращает (успех, сообщение, нынешний размер).
+local lastResize: { [Player]: number } = {}
+
+resizePlot.OnServerInvoke = function(player: Player, size: unknown): (boolean, string?, number?)
+	local claim = PlotOwnership.getClaim(player)
+	if not claim then
+		return false, "Сначала выберите цивилизацию и получите участок", nil
+	end
+	local current = claim.plot.Size.X
+	if typeof(size) ~= "number" then
+		return false, nil, current
+	end
+	local now = os.clock()
+	if now - (lastResize[player] or -math.huge) < PlotConfig.ResizeCooldown then
+		return false, "Не так быстро", current
+	end
+	lastResize[player] = now
+
+	local ok, message = PlotResizer.resize(claim.plot, size, claim.factionId)
+	return ok, message, claim.plot.Size.X
+end
+
 Players.PlayerRemoving:Connect(function(player: Player)
 	busyPlayers[player] = nil
+	lastResize[player] = nil
 	releasePlayer(player)
 end)
 

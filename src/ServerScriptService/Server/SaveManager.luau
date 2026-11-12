@@ -15,6 +15,7 @@ local RunService = game:GetService("RunService")
 local BuildConfig = require(ReplicatedStorage.Shared.BuildConfig)
 
 local PlotOwnership = require(script.Parent.PlotOwnership)
+local PlotResizer = require(script.Parent.PlotResizer)
 local PlotSerializer = require(script.Parent.PlotSerializer)
 
 type StatusKind = "ok" | "error" | "info"
@@ -187,6 +188,11 @@ local function load(player: Player, claim: PlotOwnership.Claim, replace: boolean
 	local blocks = blocksFolder(claim.plot)
 	if replace then
 		blocks:ClearAllChildren()
+	end
+	-- Сначала плита принимает сохранённый размер: иначе постройки могли бы не поместиться.
+	local savedSize = if typeof(data) == "table" then data.plotSize else nil
+	if typeof(savedSize) == "number" then
+		PlotResizer.resize(claim.plot, savedSize, claim.factionId)
 	end
 	local restored = PlotSerializer.restore(claim.plot, blocks, data, claim.factionId, player, stillValid)
 	busy[userId] = nil

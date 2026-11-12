@@ -45,8 +45,8 @@ end
 
 -- Бордюр: четыре планки по краю участка. Длинные (север/юг) идут на всю ширину,
 -- короткие (восток/запад) заходят между ними, чтобы планки не пересекались.
-local function addBorder(decor: Instance, center: Vector3, style: PlotConfig.PlotStyle)
-	local half = PlotConfig.PlotSize / 2
+local function addBorder(decor: Instance, center: Vector3, style: PlotConfig.PlotStyle, plotSize: number)
+	local half = plotSize / 2
 	local width = PlotConfig.BorderWidth
 	local height = PlotConfig.BorderHeight
 	local surfaceY = center.Y + PlotConfig.PlotThickness / 2
@@ -64,8 +64,8 @@ local function addBorder(decor: Instance, center: Vector3, style: PlotConfig.Plo
 		)
 	end
 
-	local long = PlotConfig.PlotSize
-	local short = PlotConfig.PlotSize - width * 2
+	local long = plotSize
+	local short = plotSize - width * 2
 	rail("BorderNorth", Vector3.new(long, height, width), 0, -offset)
 	rail("BorderSouth", Vector3.new(long, height, width), 0, offset)
 	rail("BorderEast", Vector3.new(width, height, short), offset, 0)
@@ -134,9 +134,9 @@ local function addBlock(decor: Instance, name: string, base: Vector3, style: Plo
 end
 
 -- Угловые элементы: по одному в каждом углу, вплотную к внешнему краю участка.
-local function addCorners(decor: Instance, center: Vector3, style: PlotConfig.PlotStyle)
+local function addCorners(decor: Instance, center: Vector3, style: PlotConfig.PlotStyle, plotSize: number)
 	local surfaceY = center.Y + PlotConfig.PlotThickness / 2
-	local inset = PlotConfig.PlotSize / 2 - PlotConfig.CornerBaseSize / 2
+	local inset = plotSize / 2 - PlotConfig.CornerBaseSize / 2
 	local corners = {
 		{ name = "CornerNE", sx = 1, sz = -1 },
 		{ name = "CornerSE", sx = 1, sz = 1 },
@@ -151,6 +151,40 @@ local function addCorners(decor: Instance, center: Vector3, style: PlotConfig.Pl
 		else
 			addBlock(decor, corner.name, base, style)
 		end
+	end
+end
+
+-- Оформление плиты под её нынешний размер: бордюр, угловые элементы и сетка.
+-- Вызывается при постройке участка и после каждой смены размера (PlotResizer).
+function PlotBuilder.decorate(plot: Part, factionId: string)
+	local style = PlotConfig.Styles[factionId] or PlotConfig.DefaultStyle
+	local size = plot.Size.X
+
+	local existing = plot:FindFirstChild("Decor")
+	local decor: Instance
+	if existing then
+		decor = existing
+	else
+		local created = Instance.new("Folder")
+		created.Name = "Decor"
+		created.Parent = plot
+		decor = created
+	end
+	decor:ClearAllChildren()
+	addBorder(decor, plot.Position, style, size)
+	addCorners(decor, plot.Position, style, size)
+
+	-- Линии сетки проходят через центр плиты — как и привязка блоков (BuildGrid), поэтому
+	-- при любом размере нарисованная сетка совпадает с той, по которой встают блоки.
+	local grid = plot:FindFirstChild("BuildGrid")
+	if not grid then
+		addGrid(plot)
+		grid = plot:FindFirstChild("BuildGrid")
+	end
+	if grid and grid:IsA("Texture") then
+		local offset = (size / 2) % PlotConfig.GridStudsPerTile
+		grid.OffsetStudsU = offset
+		grid.OffsetStudsV = offset
 	end
 end
 
@@ -177,12 +211,7 @@ function PlotBuilder.build(parent: Instance, player: Player, factionId: string, 
 
 	-- Шаг 4. Оформление: сетка, бордюр и углы. Декор лежит внутри участка (папка Decor),
 	-- поэтому исчезает вместе с ним, когда PlotService удаляет участок.
-	addGrid(plot)
-	local decor = Instance.new("Folder")
-	decor.Name = "Decor"
-	addBorder(decor, center, style)
-	addCorners(decor, center, style)
-	decor.Parent = plot
+	PlotBuilder.decorate(plot, factionId)
 
 	-- Папка для построек игрока (заполняет BuildService, имя = BuildConfig.BlocksFolderName).
 	-- Лежит внутри участка, поэтому блоки удаляются вместе с ним.

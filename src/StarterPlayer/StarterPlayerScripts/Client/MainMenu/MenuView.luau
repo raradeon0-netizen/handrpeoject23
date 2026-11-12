@@ -27,6 +27,8 @@ export type View = {
 	muteButton: TextButton,
 	sfxButton: TextButton, -- «Звуки стройки (SFX): Вкл / Выкл»
 	animationButton: TextButton, -- «Анимации стройки: Выкл / Обычная / Мощная»
+	plotSizeButton: TextButton, -- «Размер плиты: 200×200 (Стандартная)»
+	plotSizeNote: TextLabel, -- ответ сервера на смену размера
 	pauseScreen: Frame, -- меню паузы (во время игры)
 	resumeButton: TextButton,
 	pauseSettingsButton: TextButton,
@@ -111,7 +113,7 @@ function MenuView.build(playerGui: PlayerGui): View
 	-- Шаг 4. Окно настроек: выбор размера интерфейса и кнопка «Закрыть».
 	local settingsScreen = UIFactory.screen("SettingsScreen", gui)
 	settingsScreen.Active = true -- открытое из паузы окно не пропускает клики в мир
-	local settingsPanel = UIFactory.panel("Panel", UDim2.fromOffset(480, 510), settingsScreen)
+	local settingsPanel = UIFactory.panel("Panel", UDim2.fromOffset(480, 580), settingsScreen)
 	UIFactory.verticalList(settingsPanel, 16)
 
 	local settingsTitle = UIFactory.label("Title", "Настройки", 36, settingsPanel)
@@ -224,10 +226,23 @@ function MenuView.build(playerGui: PlayerGui): View
 	animationButton.TextSize = 19
 	animationButton.LayoutOrder = 7
 
+	-- Размер строительной плиты: кнопка перебирает пресеты, под ней — ответ сервера.
+	local plotSizeButton = UIFactory.button("PlotSizeButton", "", Theme.SecondaryButtonColor, settingsPanel)
+	plotSizeButton.Size = UDim2.new(0.85, 0, 0, 38)
+	plotSizeButton.TextSize = 19
+	plotSizeButton.LayoutOrder = 8
+
+	local plotSizeNote = UIFactory.label("PlotSizeNote", "", 16, settingsPanel)
+	plotSizeNote.Font = Theme.BodyFont
+	plotSizeNote.TextColor3 = Theme.SubTextColor
+	plotSizeNote.Size = UDim2.new(1, 0, 0, 20)
+	plotSizeNote.LayoutOrder = 9
+	plotSizeNote.Visible = false -- скрытая строка не занимает места в списке
+
 	local closeSettingsButton = UIFactory.button("CloseButton", "Закрыть", Theme.PrimaryButtonColor, settingsPanel)
 	closeSettingsButton.Size = UDim2.new(0.5, 0, 0, 44)
 	closeSettingsButton.TextSize = 22
-	closeSettingsButton.LayoutOrder = 8
+	closeSettingsButton.LayoutOrder = 10
 
 	-- Шаг 5. Добавляем GUI в PlayerGui последним, когда иерархия уже собрана.
 	-- Меню паузы (во время игры): продолжить, настройки, выход в главное меню.
@@ -274,6 +289,8 @@ function MenuView.build(playerGui: PlayerGui): View
 		muteButton = muteButton,
 		sfxButton = sfxButton,
 		animationButton = animationButton,
+		plotSizeButton = plotSizeButton,
+		plotSizeNote = plotSizeNote,
 		pauseScreen = pauseScreen,
 		resumeButton = resumeButton,
 		pauseSettingsButton = pauseSettingsButton,

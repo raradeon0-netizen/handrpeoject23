@@ -253,7 +253,8 @@ function BuildGrid.computePlacement(req: PlacementRequest): Placement?
 		local step = req.gridStep
 		if step > 0 then
 			local normalAxis = dominantAxis(n)
-			local origins = Vector3.new(-plot.Size.X / 2, surfaceY(plot), -plot.Size.Z / 2)
+			-- Сетка отсчитывается от центра плиты: при смене её размера линии не сдвигаются.
+			local origins = Vector3.new(0, surfaceY(plot), 0)
 			for axis = 1, 3 do
 				if axis ~= normalAxis then
 					-- Тонкая полоса резака встаёт на линию сетки серединой, а не краем.
@@ -485,7 +486,7 @@ function BuildGrid.snapMove(
 	if gridStep <= 0 then
 		return round3(distance)
 	end
-	local origins = Vector3.new(-plot.Size.X / 2, surfaceY(plot), -plot.Size.Z / 2)
+	local origins = Vector3.new(0, surfaceY(plot), 0)
 	local snapped = snapAxis(start + distance, component(extents, axis), component(origins, axis), gridStep)
 	return round3(snapped - start)
 end

@@ -306,6 +306,26 @@ function BuildCameraController.start(plot: Part)
 	}
 	session = s
 
+	-- Плиту могут перестроить в другой размер: границы полёта следуют за её краями.
+	table.insert(
+		s.connections,
+		plot:GetPropertyChangedSignal("Size"):Connect(function()
+			local newHalf = plot.Size / 2
+			local top = plot.Position.Y + newHalf.Y
+			s.minBounds = Vector3.new(
+				plot.Position.X - newHalf.X - CONFIG.BoundsMargin,
+				top + CONFIG.MinHeight,
+				plot.Position.Z - newHalf.Z - CONFIG.BoundsMargin
+			)
+			s.maxBounds = Vector3.new(
+				plot.Position.X + newHalf.X + CONFIG.BoundsMargin,
+				top + CONFIG.MaxHeight,
+				plot.Position.Z + newHalf.Z + CONFIG.BoundsMargin
+			)
+			s.targetPos = clampToBounds(s, s.targetPos)
+		end)
+	)
+
 	-- Шаг 4. Ввод мышью: ПКМ крутит камеру, колесо двигает вдоль взгляда.
 	table.insert(
 		s.connections,
