@@ -146,6 +146,11 @@ BuildConfig.Shapes = {
 	Altar = { id = "Altar", size = Vector3.new(8, 4, 4), prefab = true },
 	Pedestal = { id = "Pedestal", size = Vector3.new(4, 6, 4), prefab = true },
 	Obelisk = { id = "Obelisk", size = Vector3.new(4, 16, 4), prefab = true },
+
+	-- Резные варианты базовых блоков
+	OrnateRoad = { id = "OrnateRoad", size = Vector3.new(8, 1, 8), prefab = true },
+	OrnateWall = { id = "OrnateWall", size = Vector3.new(12, 8, 4), prefab = true },
+	OrnateCube = { id = "OrnateCube", size = Vector3.new(4, 4, 4), prefab = true },
 } :: { [string]: Shape }
 
 -- Базовый материал блоков по фракции: песчаник для Египта, мрамор для Рима и Греции.

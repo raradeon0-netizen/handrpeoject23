@@ -27,7 +27,8 @@ export type View = {
 
 local PICKER_SIZE = Vector2.new(680, 330)
 local TILE_SIZE = Vector2.new(120, 76)
-local TAB_SIZE = Vector2.new(86, 30)
+local TAB_HEIGHT = 30
+local TAB_GAP = 6
 local GAP = 8
 
 local BlockPickerView = {}
@@ -111,21 +112,27 @@ function BlockPickerView.build(gui: ScreenGui): View
 	tabsRow.Name = "Tabs"
 	tabsRow.BackgroundTransparency = 1
 	tabsRow.Position = UDim2.fromOffset(12, 44)
-	tabsRow.Size = UDim2.new(1, -24, 0, TAB_SIZE.Y)
+	tabsRow.Size = UDim2.new(1, -24, 0, TAB_HEIGHT)
 	tabsRow.Parent = frame
 
 	local tabsLayout = Instance.new("UIListLayout")
 	tabsLayout.FillDirection = Enum.FillDirection.Horizontal
 	tabsLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	tabsLayout.Padding = UDim.new(0, 6)
+	tabsLayout.Padding = UDim.new(0, TAB_GAP)
 	tabsLayout.Parent = tabsRow
 
+	-- Вкладки делят ширину окна поровну: новая категория не уезжает за край.
+	local tabCount = #BlockCatalog.Categories
+	local tabWidth = math.floor((PICKER_SIZE.X - 24 - TAB_GAP * (tabCount - 1)) / tabCount)
 	local tabButtons: { [string]: TextButton } = {}
 	for index, category in BlockCatalog.Categories do
 		local tab = UIFactory.button(category.id .. "Tab", category.label, Theme.SecondaryButtonColor, tabsRow)
-		tab.Size = UDim2.fromOffset(TAB_SIZE.X, TAB_SIZE.Y)
+		tab.Size = UDim2.fromOffset(tabWidth, TAB_HEIGHT)
 		tab.LayoutOrder = index
-		tab.TextSize = 16
+		tab.TextScaled = true
+		local tabTextLimit = Instance.new("UITextSizeConstraint")
+		tabTextLimit.MaxTextSize = 16
+		tabTextLimit.Parent = tab
 		tabButtons[category.id] = tab
 	end
 
@@ -134,8 +141,8 @@ function BlockPickerView.build(gui: ScreenGui): View
 	scroll.Name = "Blocks"
 	scroll.BackgroundTransparency = 1
 	scroll.BorderSizePixel = 0
-	scroll.Position = UDim2.fromOffset(12, 44 + TAB_SIZE.Y + 10)
-	scroll.Size = UDim2.new(1, -24, 1, -(44 + TAB_SIZE.Y + 10 + 12))
+	scroll.Position = UDim2.fromOffset(12, 44 + TAB_HEIGHT + 10)
+	scroll.Size = UDim2.new(1, -24, 1, -(44 + TAB_HEIGHT + 10 + 12))
 	scroll.CanvasSize = UDim2.new()
 	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	scroll.ScrollingDirection = Enum.ScrollingDirection.Y
@@ -155,6 +162,14 @@ function BlockPickerView.build(gui: ScreenGui): View
 	grid.CellPadding = UDim2.fromOffset(GAP, GAP)
 	grid.SortOrder = Enum.SortOrder.LayoutOrder
 	grid.Parent = scroll
+
+	-- Подстраховка к AutomaticCanvasSize: высота прокрутки всегда равна высоте сетки плиток,
+	-- поэтому новые блоки не остаются за нижним краем списка.
+	local function fitCanvas()
+		scroll.CanvasSize = UDim2.fromOffset(0, grid.AbsoluteContentSize.Y + 8)
+	end
+	grid:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(fitCanvas)
+	fitCanvas()
 
 	local tiles: { [string]: Tile } = {}
 	for index, entry in BlockCatalog.List do

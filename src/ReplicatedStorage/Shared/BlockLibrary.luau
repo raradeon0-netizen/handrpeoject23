@@ -425,7 +425,117 @@ local function pedestal(_factionId: string?): { Piece }
 	return list
 end
 
+-- ===== Резные (богато украшенные) варианты базовых блоков =====
+
+-- Дорога 8x1x8 (вдоль Z): основание, брусчатка «вперевязку» и приподнятые резные бордюры по бокам.
+-- Четыре ряда камней повторяют рисунок, поэтому плитки стыкуются друг с другом без шва.
+local function ornateRoad(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	block(list, "Trim", 6.4, 0.5, 8, 0, -0.25, 0) -- основание под камнями
+
+	local laneWidth, rows, perRow = 6.4, 4, 3
+	local depth = 8 / rows
+	local width = laneWidth / perRow
+	local gap = 0.1
+	for row = 0, rows - 1 do
+		local z = -4 + depth * (row + 0.5)
+		local shifted = row % 2 == 1
+		-- Сдвинутый ряд: половинки по краям и целые камни между ними.
+		local edges: { number } = {}
+		if shifted then
+			edges = { -laneWidth / 2, -laneWidth / 2 + width / 2 }
+			for i = 1, perRow - 1 do
+				table.insert(edges, -laneWidth / 2 + width / 2 + width * i)
+			end
+			table.insert(edges, laneWidth / 2)
+		else
+			for i = 0, perRow do
+				table.insert(edges, -laneWidth / 2 + width * i)
+			end
+		end
+		for i = 1, #edges - 1 do
+			local left, right = edges[i], edges[i + 1]
+			-- Камни чуть разной высоты и двух оттенков: живая, неровная кладка.
+			local tall = (row + i) % 2 == 0
+			local height = if tall then 0.3 else 0.24
+			block(
+				list,
+				if tall then "Main" else "Trim",
+				right - left - gap,
+				height,
+				depth - gap,
+				(left + right) / 2,
+				height / 2,
+				z
+			)
+		end
+	end
+
+	for _, sx in { -1, 1 } do
+		block(list, "Main", 0.8, 0.8, 8, sx * 3.6, -0.1, 0) -- бордюр
+		for _, sz in { -1, 1 } do
+			block(list, "Trim", 0.8, 0.2, 3.8, sx * 3.6, 0.4, sz * 2) -- резной верх бордюра
+		end
+		block(list, "Accent", 0.12, 0.12, 8, sx * 3.14, 0.36, 0) -- металлическая кромка у камней
+	end
+	return list
+end
+
+-- Резная стена 12x8x4: цоколь с профилем, рельефные пояса, утопленные панели между пилястрами
+-- и золотая отделка. Обе стороны одинаковые.
+local function ornateWall(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	block(list, "Trim", 12, 1, 4, 0, -3.5, 0) -- цоколь
+	block(list, "Trim", 11.6, 0.4, 3.8, 0, -2.8, 0) -- профиль цоколя
+	block(list, "Main", 11.2, 5.6, 3.2, 0, 0.2, 0) -- тело стены
+	block(list, "Accent", 11.4, 0.25, 3.4, 0, 3.125, 0) -- золотой пояс под карнизом
+	block(list, "Trim", 12, 0.75, 4, 0, 3.625, 0) -- карниз
+
+	local pilasters = { -5.2, -1.7333, 1.7333, 5.2 }
+	local panels = { -3.4667, 0, 3.4667 }
+	for _, sz in { -1, 1 } do
+		block(list, "Trim", 11.4, 0.3, 0.2, 0, -2.2, sz * 1.7) -- нижний рельефный пояс
+		block(list, "Trim", 11.4, 0.3, 0.2, 0, 2.5, sz * 1.7) -- верхний рельефный пояс
+		for _, x in pilasters do
+			block(list, "Main", 0.8, 4.4, 0.4, x, 0.15, sz * 1.8)
+		end
+		-- Панели лежат глубже пилястр: получается ниша с цветной вставкой в золотой раме.
+		for _, x in panels do
+			block(list, "Detail", 2.3, 3.4, 0.1, x, 0.15, sz * 1.65)
+			block(list, "Accent", 2.5, 0.12, 0.12, x, 1.97, sz * 1.72)
+			block(list, "Accent", 2.5, 0.12, 0.12, x, -1.67, sz * 1.72)
+		end
+	end
+	return list
+end
+
+-- Орнаментный блок 4x4x4: плинт и карниз, угловые столбики и трёхслойный рельеф
+-- на каждой боковой грани (каменная плита, металлическая рамка, цветная вставка).
+local function ornateCube(_factionId: string?): { Piece }
+	local list: { Piece } = {}
+	block(list, "Main", 3.4, 3.4, 3.4, 0, 0, 0)
+	block(list, "Trim", 4, 0.4, 4, 0, -1.8, 0)
+	block(list, "Trim", 4, 0.4, 4, 0, 1.8, 0)
+	for _, sx in { -1, 1 } do
+		for _, sz in { -1, 1 } do
+			block(list, "Trim", 0.6, 3.2, 0.6, sx * 1.7, 0, sz * 1.7)
+		end
+	end
+	for _, side in { -1, 1 } do
+		block(list, "Main", 2.4, 2.4, 0.15, 0, 0, side * 1.775)
+		block(list, "Accent", 2, 2, 0.08, 0, 0, side * 1.89)
+		block(list, "Detail", 1.6, 1.6, 0.07, 0, 0, side * 1.965)
+		block(list, "Main", 0.15, 2.4, 2.4, side * 1.775, 0, 0)
+		block(list, "Accent", 0.08, 2, 2, side * 1.89, 0, 0)
+		block(list, "Detail", 0.07, 1.6, 1.6, side * 1.965, 0, 0)
+	end
+	return list
+end
+
 local PREFABS: { [string]: Prefab } = {
+	OrnateRoad = { build = ornateRoad, collision = "bounds" },
+	OrnateWall = { build = ornateWall, collision = "bounds" },
+	OrnateCube = { build = ornateCube, collision = "bounds" },
 	CarvedColumn = { build = column(16), collision = "bounds" },
 	CarvedColumnShort = { build = column(8), collision = "bounds" },
 	Arch = { build = archRound, collision = "pieces" },

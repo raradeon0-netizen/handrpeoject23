@@ -10,7 +10,7 @@ export type Material = {
 	reflectance: number,
 }
 
-export type TabletStyle = "Stone" | "Papyrus"
+export type TabletStyle = "Stone" | "DarkStone"
 
 export type Tablet = {
 	id: string,
@@ -74,7 +74,7 @@ PaintCatalog.Tablets = {
 		title = "Захоронение Тутанхамона",
 		factionId = "Egypt",
 		factionName = "Египет",
-		style = "Papyrus",
+		style = "DarkStone",
 		text = "Тутанхамон был славным правителем, считался одним из лучших богов. "
 			.. "Жаль, он нас покинул и не освятил нашу пирамиду, вот и захоронился в ней...",
 	},

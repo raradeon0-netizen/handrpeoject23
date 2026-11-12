@@ -15,6 +15,9 @@ type Look = {
 	material: Enum.Material,
 	color: Color3,
 	ink: Color3,
+	border: Color3,
+	borderTransparency: number,
+	textStroke: number?, -- прозрачность тёмной обводки букв (nil = без обводки)
 }
 
 local LOOKS: { [PaintCatalog.TabletStyle]: Look } = {
@@ -22,11 +25,17 @@ local LOOKS: { [PaintCatalog.TabletStyle]: Look } = {
 		material = Enum.Material.Limestone,
 		color = Color3.fromRGB(196, 186, 165),
 		ink = Color3.fromRGB(46, 38, 30),
+		border = Color3.fromRGB(46, 38, 30),
+		borderTransparency = 0.35,
 	},
-	Papyrus = {
-		material = Enum.Material.Fabric,
-		color = Color3.fromRGB(224, 202, 150),
-		ink = Color3.fromRGB(84, 50, 22),
+	-- Тёмный камень с золотом: светлые буквы с обводкой читаются при любом освещении.
+	DarkStone = {
+		material = Enum.Material.Slate,
+		color = Color3.fromRGB(45, 35, 25),
+		ink = Color3.fromRGB(255, 235, 180),
+		border = Color3.fromRGB(255, 200, 60),
+		borderTransparency = 0,
+		textStroke = 0.15,
 	},
 }
 
@@ -58,6 +67,10 @@ local function makeLabel(name: string, text: string, look: Look, parent: Instanc
 	label.Text = text
 	label.Font = TABLET_FONT
 	label.TextColor3 = look.ink
+	if look.textStroke then
+		label.TextStrokeColor3 = Color3.new(0, 0, 0)
+		label.TextStrokeTransparency = look.textStroke
+	end
 	label.TextScaled = true
 	label.TextWrapped = true
 	label.BackgroundTransparency = 1
@@ -84,9 +97,9 @@ local function buildInscription(tablet: PaintCatalog.Tablet, look: Look, parent:
 	border.Parent = gui
 
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = look.ink
-	stroke.Thickness = 3
-	stroke.Transparency = 0.35
+	stroke.Color = look.border
+	stroke.Thickness = 4
+	stroke.Transparency = look.borderTransparency
 	stroke.Parent = border
 
 	local title = makeLabel("Title", tablet.title, look, border)
@@ -98,8 +111,8 @@ local function buildInscription(tablet: PaintCatalog.Tablet, look: Look, parent:
 	divider.AnchorPoint = Vector2.new(0.5, 0)
 	divider.Position = UDim2.fromScale(0.5, 0.27)
 	divider.Size = UDim2.new(0.6, 0, 0, 2)
-	divider.BackgroundColor3 = look.ink
-	divider.BackgroundTransparency = 0.35
+	divider.BackgroundColor3 = look.border
+	divider.BackgroundTransparency = look.borderTransparency
 	divider.BorderSizePixel = 0
 	divider.Parent = border
 

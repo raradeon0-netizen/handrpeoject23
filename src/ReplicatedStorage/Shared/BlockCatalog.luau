@@ -24,6 +24,7 @@ BlockCatalog.AllCategoryId = "All"
 BlockCatalog.Categories = {
 	{ id = "All", label = "Все" },
 	{ id = "Basic", label = "Базовые" },
+	{ id = "Ornate", label = "Резные" },
 	{ id = "Columns", label = "Колонны" },
 	{ id = "Arches", label = "Арки" },
 	{ id = "Stairs", label = "Ступени" },
@@ -37,6 +38,26 @@ BlockCatalog.List = {
 	{ id = "Wall", displayName = "Стена", description = "16×12×4", category = "Basic" },
 	{ id = "Column", displayName = "Опора", description = "Простая колонна", category = "Basic" },
 	{ id = "Slab", displayName = "Плита", description = "Полы и перекрытия", category = "Basic" },
+
+	-- Резные: составные варианты базовых блоков с отделкой
+	{
+		id = "OrnateRoad",
+		displayName = "Дорога (Брусчатка)",
+		description = "Камни и бордюры 8×1×8",
+		category = "Ornate",
+	},
+	{
+		id = "OrnateWall",
+		displayName = "Резная стена",
+		description = "Панели и пояса 12×8×4",
+		category = "Ornate",
+	},
+	{
+		id = "OrnateCube",
+		displayName = "Орнаментный блок",
+		description = "Столбики и вставки 4×4×4",
+		category = "Ornate",
+	},
 
 	-- Колонны
 	{
